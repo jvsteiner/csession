@@ -42,7 +42,12 @@ export function probe(root: string): GitInfo {
 /** Every change to a file git already knows about. Binary-safe so it applies cleanly. */
 export function diffPatch(root: string): string {
   const r = run(root, ["diff", "--binary", "HEAD"]);
-  return r.ok ? r.stdout + "\n" : "";
+  // A failed diff is not "no changes" — conflating them yields a bundle that
+  // claims dirty with no patch. Throw loudly instead of silently returning "".
+  if (!r.ok) {
+    throw new Error(`git diff failed in ${root}: ${r.stderr || "(no stderr)"}`);
+  }
+  return r.stdout + "\n";
 }
 
 export function applyCheck(root: string, patchPath: string): { ok: boolean; output: string } {

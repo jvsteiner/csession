@@ -92,3 +92,14 @@ test("probe on a non-repo returns nulls rather than throwing", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("diffPatch on a non-repo throws rather than returning empty string", () => {
+  const dir = mkdtempSync(join(tmpdir(), "csession-norepo-"));
+  try {
+    assert.throws(() => {
+      diffPatch(dir);
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
