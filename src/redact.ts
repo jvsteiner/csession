@@ -16,7 +16,10 @@ interface Rule {
 }
 
 const RULES: Rule[] = [
-  { name: "private-key", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g },
+  // Only exclude `"`, not `\`. PEM bodies inside JSON strings contain `\n` escapes;
+  // excluding backslash would stop the rule matching real keys inside strings.
+  // Quotes alone bound the JSON string, which is the property we need.
+  { name: "private-key", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[^"]*?-----END [A-Z ]*PRIVATE KEY-----/g },
   { name: "anthropic-key", pattern: /sk-ant-[A-Za-z0-9_\-]{20,}/g },
   { name: "tavily-key", pattern: /tvly-[A-Za-z0-9_\-]{20,}/g },
   { name: "openai-key", pattern: /sk-(?:proj-)?[A-Za-z0-9]{32,}/g },
