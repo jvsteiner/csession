@@ -51,11 +51,18 @@ function escapeRegExp(s: string): string {
 }
 
 /**
- * Swaps one prefix, everywhere, as plain text. Safe for JSON because both
- * `from` and `to` are absolute paths and contain no quote or backslash.
+ * Swaps one prefix, everywhere, as plain text. Validates that from and to
+ * contain no quote or backslash, which would break JSON. Anchors the match
+ * to path boundaries to prevent sibling paths from being rewritten.
  */
 export function rewritePrefix(lines: string[], from: string, to: string): { lines: string[]; replaced: number } {
-  const re = new RegExp(escapeRegExp(from), "g");
+  if (from.includes('"') || from.includes("\\")) {
+    throw new Error(`rewritePrefix: from argument contains quote or backslash: ${from}`);
+  }
+  if (to.includes('"') || to.includes("\\")) {
+    throw new Error(`rewritePrefix: to argument contains quote or backslash: ${to}`);
+  }
+  const re = new RegExp(escapeRegExp(from) + "(?![A-Za-z0-9._-])", "g");
   let replaced = 0;
   const out = lines.map((line) =>
     line.replace(re, () => {
@@ -66,9 +73,12 @@ export function rewritePrefix(lines: string[], from: string, to: string): { line
   return { lines: out, replaced };
 }
 
-const ABS_PATH = /(?:\/Users\/|\/home\/)[A-Za-z0-9._+\-\/]+/g;
+// Matches paths that are sender-specific and not portable. Excludes /usr, /etc,
+// /bin, /opt: those are system paths that mean the same on both machines and
+// would flood the report if listed.
+const ABS_PATH = /(?:\/Users\/|\/home\/|\/root\/|\/tmp\/|\/private\/var\/|\/var\/folders\/)[A-Za-z0-9._+\-\/]+/g;
 
-/** Distinct absolute home-rooted paths that are NOT under `root`, sorted. */
+/** Distinct absolute home-rooted or temp paths that are NOT under `root`, sorted. */
 export function unresolvedAbsolutePaths(lines: string[], root: string): string[] {
   const found = new Set<string>();
   for (const line of lines) {

@@ -65,3 +65,33 @@ test("sha256 is stable and hex", () => {
   assert.match(sha256("abc"), /^[0-9a-f]{64}$/);
   assert.equal(sha256("abc"), sha256("abc"));
 });
+
+test("rewritePrefix requires path boundary: sibling paths are untouched", () => {
+  const line = JSON.stringify({ path: "/Users/jamie/Code/app/src/a.ts", sibling: "/Users/jamie/Code/app2/x.ts" });
+  const { lines, replaced } = rewritePrefix([line], "/Users/jamie/Code/app", "/home/jamie/Code/app");
+  assert.equal(replaced, 1); // only the first path, not the sibling
+  assert.ok(lines[0]!.includes("/home/jamie/Code/app/src/a.ts"));
+  assert.ok(lines[0]!.includes("/Users/jamie/Code/app2/x.ts")); // untouched
+});
+
+test("rewritePrefix validates from argument: rejects quote", () => {
+  assert.throws(() => rewritePrefix([], '/Users/jamie/Code"app', "/home/jamie/Code/app"));
+});
+
+test("rewritePrefix validates from argument: rejects backslash", () => {
+  assert.throws(() => rewritePrefix([], '/Users/jamie/Code\\app', "/home/jamie/Code/app"));
+});
+
+test("rewritePrefix validates to argument: rejects quote", () => {
+  assert.throws(() => rewritePrefix([], '/Users/jamie/Code/app', '/home/jamie/Code"app'));
+});
+
+test("rewritePrefix validates to argument: rejects backslash", () => {
+  assert.throws(() => rewritePrefix([], '/Users/jamie/Code/app', '/home/jamie/Code\\app'));
+});
+
+test("unresolvedAbsolutePaths recognizes /tmp/ paths", () => {
+  const line = JSON.stringify({ text: "temp file at /tmp/build/output.log and project at /Users/jamie/Code/app/src/main.ts" });
+  const left = unresolvedAbsolutePaths([line], "/Users/jamie/Code/app");
+  assert.ok(left.includes("/tmp/build/output.log"));
+});
