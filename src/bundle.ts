@@ -45,8 +45,18 @@ export function readBundle(bundlePath: string): Record<string, string> {
       throw new CorruptBundleError(`not a readable .ccsession bundle: ${(r.stderr ?? "").trim()}`);
     }
     const out: Record<string, string> = {};
-    for (const name of readdirSync(staging)) {
-      out[name] = readFileSync(join(staging, name), "utf8");
+    // Bundles are untrusted input from another machine. Every malformed shape must become
+    // a typed refusal (exit code 3) rather than a crash that touches the filesystem unexpectedly.
+    const entries = readdirSync(staging, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) {
+        throw new CorruptBundleError(`bundle contains a non-regular entry: "${entry.name}" (not a regular file)`);
+      }
+      try {
+        out[entry.name] = readFileSync(join(staging, entry.name), "utf8");
+      } catch (e) {
+        throw new CorruptBundleError(`failed to read "${entry.name}" from bundle: ${(e as Error).message}`);
+      }
     }
     if (!("manifest.json" in out)) {
       throw new CorruptBundleError("bundle contains no manifest.json");

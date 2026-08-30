@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { caught } from "./testutil.js";
-import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeBundle, readBundle, atomicWrite } from "./bundle.js";
@@ -64,6 +65,26 @@ test("atomicWrite overwrites an existing file in place", () => {
     atomicWrite(dest, "second");
     assert.equal(readFileSync(dest, "utf8"), "second");
     assert.ok(existsSync(dest));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a bundle containing a directory entry is corrupt", () => {
+  const dir = mkdtempSync(join(tmpdir(), "csession-bundle-"));
+  try {
+    const staging = mkdtempSync(join(tmpdir(), "csession-stage-"));
+    try {
+      writeFileSync(join(staging, "manifest.json"), '{"a":1}');
+      writeFileSync(join(staging, "session.jsonl"), "{}\n");
+      mkdirSync(join(staging, "somedir"));
+      const tarOut = join(dir, "x.ccsession");
+      execFileSync("tar", ["-czf", tarOut, "-C", staging, "manifest.json", "session.jsonl", "somedir"]);
+      const err = caught(() => readBundle(tarOut));
+      assert.equal(err.exitCode, 3);
+    } finally {
+      rmSync(staging, { recursive: true, force: true });
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
