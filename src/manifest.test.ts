@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import { parseManifest, SCHEMA } from "./manifest.js";
-import { CorruptBundleError } from "./errors.js";
+import { caught } from "./testutil.js";
 
 const GOOD = {
   schema: SCHEMA,
@@ -24,38 +24,20 @@ test("parseManifest accepts a well-formed manifest", () => {
 });
 
 test("parseManifest rejects a newer schema with exit code 3", () => {
-  let err!: CorruptBundleError;
-  try {
-    parseManifest(JSON.stringify({ ...GOOD, schema: 999 }));
-    assert.fail("should have thrown");
-  } catch (e) {
-    err = e as CorruptBundleError;
-  }
+  const err = caught(() => parseManifest(JSON.stringify({ ...GOOD, schema: 999 })));
   assert.equal(err.exitCode, 3);
   assert.match(err.message, /schema/i);
 });
 
 test("parseManifest rejects unparseable JSON", () => {
-  let err!: CorruptBundleError;
-  try {
-    parseManifest("{not json");
-    assert.fail("should have thrown");
-  } catch (e) {
-    err = e as CorruptBundleError;
-  }
+  const err = caught(() => parseManifest("{not json"));
   assert.equal(err.exitCode, 3);
 });
 
 test("parseManifest rejects a missing required field", () => {
   const bad = JSON.parse(JSON.stringify(GOOD));
   delete bad.session.projectRoot;
-  let err!: CorruptBundleError;
-  try {
-    parseManifest(JSON.stringify(bad));
-    assert.fail("should have thrown");
-  } catch (e) {
-    err = e as CorruptBundleError;
-  }
+  const err = caught(() => parseManifest(JSON.stringify(bad)));
   assert.equal(err.exitCode, 3);
   assert.match(err.message, /projectRoot/);
 });
@@ -63,12 +45,6 @@ test("parseManifest rejects a missing required field", () => {
 test("a redaction hit carrying a value is rejected - counts only, never values", () => {
   const bad = JSON.parse(JSON.stringify(GOOD));
   bad.redaction.hits[0].value = "ghp_leak";
-  let err!: CorruptBundleError;
-  try {
-    parseManifest(JSON.stringify(bad));
-    assert.fail("should have thrown");
-  } catch (e) {
-    err = e as CorruptBundleError;
-  }
+  const err = caught(() => parseManifest(JSON.stringify(bad)));
   assert.match(err.message, /unexpected field/i);
 });
