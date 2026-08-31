@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readBundle, atomicWrite } from "../bundle.js";
 import { parseManifest } from "../manifest.js";
-import { readLines, rewritePrefix, unresolvedAbsolutePaths, sha256 } from "../transcript.js";
+import { readLines, rewritePrefix, replaceAllText, unresolvedAbsolutePaths, sha256 } from "../transcript.js";
 import { probe, applyCheck } from "../git.js";
 import { sessionFilePath } from "../paths.js";
 import { resolveProjectRoot } from "../args.js";
@@ -62,7 +62,7 @@ export function importCommand(
   const rewritten = rewritePrefix(lines, m.session.projectRoot, root);
   lines = rewritten.lines;
   if (newId !== m.session.id) {
-    lines = rewritePrefix(lines, m.session.id, newId).lines;
+    lines = replaceAllText(lines, m.session.id, newId).lines;
   }
   const unresolved = unresolvedAbsolutePaths(lines, root);
 
@@ -115,12 +115,16 @@ function buildReport(
   }
   const patch = files["uncommitted.patch"];
   if (patch) {
-    const patchPath = join(tmpdir(), `csession-${newId}.patch`);
+    // A predictable path in the shared /tmp namespace (e.g. csession-<id>.patch) lets
+    // anyone who has seen the bundle pre-plant a symlink there for writeFileSync to
+    // follow. mkdtempSync makes a private, unpredictable directory first.
+    const patchDir = mkdtempSync(join(tmpdir(), "csession-patch-"));
+    const patchPath = join(patchDir, `csession-${newId}.patch`);
     writeFileSync(patchPath, patch);
     const check = applyCheck(root, patchPath);
     l.push("");
     l.push(`This session had uncommitted changes. They were NOT applied.`);
-    l.push(`  patch:      ${patchPath}`);
+    l.push(`  patch (temporary file): ${patchPath}`);
     l.push(`  applies:    ${check.ok ? "cleanly" : `NO - ${check.output}`}`);
     l.push(`  to apply:   git -C ${root} apply ${patchPath}`);
   }

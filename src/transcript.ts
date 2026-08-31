@@ -92,3 +92,27 @@ export function unresolvedAbsolutePaths(lines: string[], root: string): string[]
 export function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
+
+/**
+ * Replaces every occurrence of `from`, with NO path-boundary anchoring.
+ *
+ * rewritePrefix() anchors on a path boundary so that /Code/app cannot rewrite
+ * /Code/app2. That rule is wrong for a UUID: a session id is self-delimiting and
+ * cannot prefix a longer identifier, and the anchor actively breaks the common case
+ * of "<id>.jsonl", where the trailing "." reads as path continuation.
+ */
+export function replaceAllText(lines: string[], from: string, to: string): { lines: string[]; replaced: number } {
+  if (/["\\]/.test(from)) {
+    throw new Error(`replaceAllText: from contains a quote or backslash: ${from}`);
+  }
+  if (/["\\]/.test(to)) {
+    throw new Error(`replaceAllText: to contains a quote or backslash: ${to}`);
+  }
+  let replaced = 0;
+  const out = lines.map((line) => {
+    const parts = line.split(from);
+    replaced += parts.length - 1;
+    return parts.join(to);
+  });
+  return { lines: out, replaced };
+}

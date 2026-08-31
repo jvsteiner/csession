@@ -143,7 +143,9 @@ test("an existing session id refuses, and --new-id succeeds with a different id"
     const newId = /session ([0-9a-f-]{36})/.exec(report)?.[1];
     assert.ok(newId && newId !== SESSION_ID);
     assert.ok(existsSync(sessionFilePath(r.root, newId!)));
-    assert.ok(readFileSync(sessionFilePath(r.root, newId!), "utf8").includes(newId!));
+    const text = readFileSync(sessionFilePath(r.root, newId!), "utf8");
+    assert.ok(text.includes(newId!));
+    assert.ok(!text.includes(SESSION_ID)); // the old id must not survive the swap
   } finally {
     rmSync(dir, { recursive: true, force: true });
     r.cleanup();
@@ -189,6 +191,11 @@ test("a patch is reported and NEVER applied", () => {
     rmSync(dir, { recursive: true, force: true });
     r.cleanup();
   }
+});
+
+test("no bundle path is a user error", () => {
+  const err = caught(() => importCommand([], {}, tmpdir()));
+  assert.equal(err.exitCode, 1);
 });
 
 test("no --root and no matching checkout is a user error", () => {

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   readLines, statTranscript, deriveProjectRoot,
-  rewritePrefix, unresolvedAbsolutePaths, sha256,
+  rewritePrefix, replaceAllText, unresolvedAbsolutePaths, sha256,
 } from "./transcript.js";
 
 const FIXTURE = [
@@ -88,6 +88,25 @@ test("rewritePrefix validates to argument: rejects quote", () => {
 
 test("rewritePrefix validates to argument: rejects backslash", () => {
   assert.throws(() => rewritePrefix([], '/Users/jamie/Code/app', '/home/jamie/Code\\app'));
+});
+
+test("replaceAllText rewrites <id>.jsonl as well as a bare <id>", () => {
+  const lines = [
+    JSON.stringify({ sessionId: "old-id", file: "old-id.jsonl" }),
+    JSON.stringify({ text: "see old-id and old-id.jsonl again" }),
+  ];
+  const { lines: out, replaced } = replaceAllText(lines, "old-id", "new-id");
+  assert.equal(replaced, 4); // sessionId, file, and 2 mentions in text - "." is not a boundary here
+  const joined = out.join("\n");
+  assert.ok(joined.includes("new-id.jsonl"));
+  assert.ok(!joined.includes("old-id"));
+});
+
+test("replaceAllText validates from and to arguments: rejects quote or backslash", () => {
+  assert.throws(() => replaceAllText([], 'old"id', "new-id"));
+  assert.throws(() => replaceAllText([], "old\\id", "new-id"));
+  assert.throws(() => replaceAllText([], "old-id", 'new"id'));
+  assert.throws(() => replaceAllText([], "old-id", "new\\id"));
 });
 
 test("unresolvedAbsolutePaths recognizes /tmp/ paths", () => {
