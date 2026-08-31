@@ -153,6 +153,9 @@ test("untracked names go in the manifest but their contents never do", () => {
     exportCommand([s.sessionId], { out }, s.root, NOW);
     const files = readBundle(out);
     assert.deepEqual(parseManifest(files["manifest.json"]!).git.untrackedFiles, ["secret-notes.txt"]);
+    // Without the flag the names ship but the contents do not, and the manifest must say so
+    // - otherwise both readers tell the receiver the wrong thing.
+    assert.equal(parseManifest(files["manifest.json"]!).git.includedUntracked, false);
     for (const content of Object.values(files)) {
       assert.ok(!content.includes("TOP SECRET BODY"));
     }
@@ -172,6 +175,7 @@ test("--include-untracked puts an untracked file's name AND content into uncommi
     assert.ok("uncommitted.patch" in files);
     assert.match(files["uncommitted.patch"]!, /new-thing\.txt/);
     assert.match(files["uncommitted.patch"]!, /brand new untracked content/);
+    assert.equal(parseManifest(files["manifest.json"]!).git.includedUntracked, true);
   } finally {
     rmSync(out, { force: true });
     s.cleanup();

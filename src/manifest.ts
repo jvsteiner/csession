@@ -23,6 +23,8 @@ export interface Manifest {
     commit: string | null;
     dirty: boolean;
     untrackedFiles: string[];
+    /** True when those files' CONTENTS ship in uncommitted.patch (export --include-untracked). */
+    includedUntracked: boolean;
   };
   redaction: {
     applied: boolean;
@@ -38,6 +40,23 @@ function req(obj: Record<string, unknown>, key: string, kind: string, path: stri
   const ok = kind === "array" ? Array.isArray(v) : kind === "nullable-string" ? v === null || typeof v === "string" : actual === want;
   if (!ok) throw new CorruptBundleError(`manifest: ${path}.${key} must be ${kind}, got ${actual}`);
   return v;
+}
+
+/**
+ * `Array.isArray` says nothing about what is IN the array. Every consumer of these
+ * arrays treats the elements as strings - inspect maps them through safe(), which calls
+ * `.replace()` - so a non-string element becomes a TypeError with no exitCode: a
+ * stack trace and exit 1, when the contract says a malformed bundle is exit 3.
+ */
+function stringArray(o: Record<string, unknown>, key: string, path: string): string[] {
+  const arr = req(o, key, "array", path) as unknown[];
+  arr.forEach((v, i) => {
+    if (typeof v !== "string") {
+      const actual = v === null ? "null" : Array.isArray(v) ? "array" : typeof v;
+      throw new CorruptBundleError(`manifest: ${path}.${key}[${i}] must be string, got ${actual}`);
+    }
+  });
+  return arr as string[];
 }
 
 function obj(v: unknown, path: string): Record<string, unknown> {
@@ -89,14 +108,21 @@ export function parseManifest(text: string): Manifest {
       projectRoot: req(s, "projectRoot", "string", "manifest.session") as string,
       recordCount: req(s, "recordCount", "number", "manifest.session") as number,
       sha256: req(s, "sha256", "string", "manifest.session") as string,
-      claudeVersions: req(s, "claudeVersions", "array", "manifest.session") as string[],
+      claudeVersions: stringArray(s, "claudeVersions", "manifest.session"),
     },
     git: {
       remote: req(g, "remote", "nullable-string", "manifest.git") as string | null,
       branch: req(g, "branch", "nullable-string", "manifest.git") as string | null,
       commit: req(g, "commit", "nullable-string", "manifest.git") as string | null,
       dirty: req(g, "dirty", "boolean", "manifest.git") as boolean,
-      untrackedFiles: req(g, "untrackedFiles", "array", "manifest.git") as string[],
+      untrackedFiles: stringArray(g, "untrackedFiles", "manifest.git"),
+      // Absent in bundles written before this field existed, so it defaults rather than
+      // failing - schema 1 stays schema 1. False is the conservative default: unless the
+      // bundle says the contents shipped, both readers tell the receiver they did not.
+      includedUntracked:
+        g["includedUntracked"] === undefined
+          ? false
+          : (req(g, "includedUntracked", "boolean", "manifest.git") as boolean),
     },
     redaction: {
       applied: req(r, "applied", "boolean", "manifest.redaction") as boolean,

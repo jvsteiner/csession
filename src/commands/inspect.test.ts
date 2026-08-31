@@ -34,6 +34,9 @@ test("inspect prints the manifest summary without extracting anything", () => {
     assert.match(report, /\/Users\/jamie\/Code\/app/);
     assert.match(report, /github-token/);
     assert.match(report, /sha256 OK/);
+    // Regression: `.map(safe)` passed the array index as safe()'s `max`, so element 0
+    // was truncated to nothing and every bundle reported `versions  …(truncated)`.
+    assert.match(report, /versions {2}2\.1\.246/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -77,6 +80,23 @@ test("inspect prints redaction DISABLED warning when redaction is not applied", 
     const out = bundleAt(dir, '{"a":1}\n', { redaction: { applied: false, paranoid: false, hits: [] } });
     const report = inspectCommand([out]);
     assert.match(report, /redaction DISABLED - this bundle may contain secrets/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("inspect says whether untracked contents are in the bundle or not", () => {
+  const dir = mkdtempSync(join(tmpdir(), "csession-insp-"));
+  try {
+    const g = { remote: null, branch: "main", commit: "c".repeat(40), dirty: true, untrackedFiles: ["n.txt"] };
+
+    const not = bundleAt(dir, '{"a":1}\n', { git: { ...g, includedUntracked: false } });
+    assert.match(inspectCommand([not]), /untracked NOT included in this bundle: n\.txt/);
+
+    const yes = bundleAt(dir, '{"a":1}\n', { git: { ...g, includedUntracked: true } });
+    const report = inspectCommand([yes]);
+    assert.match(report, /untracked included in this bundle: n\.txt/);
+    assert.doesNotMatch(report, /NOT included/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

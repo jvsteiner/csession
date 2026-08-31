@@ -77,6 +77,7 @@ export function exportCommand(
       commit: git.commit,
       dirty: git.dirty,
       untrackedFiles: git.untrackedFiles,
+      includedUntracked: includeUntracked,
     },
     redaction: { applied: applyRedaction, paranoid, hits },
   };

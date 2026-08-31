@@ -50,6 +50,14 @@ try {
   if (e instanceof CsError) {
     console.error(`error: ${e.message}`);
     process.exit(e.exitCode);
+  } else {
+    // An untyped error is still a user-facing failure, and a stack trace is never the
+    // right thing to show someone for one. transcript.ts, git.ts and bundle.ts all throw
+    // plain Errors - several are genuine programmer-error guards that must stay loud in
+    // tests, so they are not being converted; this net is what keeps them from reaching
+    // a person as a wall of Node internals. Exit 1: an untyped failure is not a safety
+    // refusal (2) and not a diagnosed corrupt bundle (3).
+    console.error(`error: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
   }
-  throw e;
 }

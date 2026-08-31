@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { caught } from "../testutil.js";
 import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync, mkdirSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
-import { join } from "node:path";
-import { execFileSync } from "node:child_process";
+import { join, dirname, relative, resolve, isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
+import { execFileSync, spawnSync } from "node:child_process";
 import { writeBundle } from "../bundle.js";
 import { importCommand } from "./import.js";
 import { sha256 } from "../transcript.js";
@@ -35,7 +36,12 @@ function receiverRepo(): { root: string; commit: string; cleanup: () => void } {
   };
 }
 
-function makeBundle(dir: string, gitOverrides: Record<string, unknown>, extra: Record<string, string> = {}): string {
+function makeBundle(
+  dir: string,
+  gitOverrides: Record<string, unknown>,
+  extra: Record<string, string> = {},
+  sessionOverrides: Record<string, unknown> = {},
+): string {
   const sessionJsonl =
     [
       JSON.stringify({ type: "user", cwd: SENDER_ROOT, version: "2.1.246", sessionId: SESSION_ID }),
@@ -45,7 +51,7 @@ function makeBundle(dir: string, gitOverrides: Record<string, unknown>, extra: R
   const manifest = {
     schema: SCHEMA,
     createdAt: "2026-08-31T09:14:22.000Z",
-    session: { id: SESSION_ID, projectRoot: SENDER_ROOT, recordCount: 2, sha256: sha256(sessionJsonl), claudeVersions: ["2.1.246"] },
+    session: { id: SESSION_ID, projectRoot: SENDER_ROOT, recordCount: 2, sha256: sha256(sessionJsonl), claudeVersions: ["2.1.246"], ...sessionOverrides },
     git: { remote: "git@github.com:o/r.git", branch: "main", commit: "z".repeat(40), dirty: false, untrackedFiles: [], ...gitOverrides },
     redaction: { applied: true, paranoid: false, hits: [] },
   };
@@ -196,6 +202,131 @@ test("a patch is reported and NEVER applied", () => {
 test("no bundle path is a user error", () => {
   const err = caught(() => importCommand([], {}, tmpdir()));
   assert.equal(err.exitCode, 1);
+});
+
+// The manifest is attacker-controlled and its session id becomes a filesystem path via
+// sessionFilePath(). An id of "../../..//tmp/x" resolves clean out of ~/.claude/projects,
+// and atomicWrite's recursive mkdir creates the way there - writing the equally
+// attacker-controlled transcript. The existing existsSync collision guard does not help:
+// the traversal target is a NEW path, so the guard passes.
+test("a session id that is not a UUID is refused with exit 3, and no file escapes", () => {
+  const r = receiverRepo();
+  const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
+  const traversalTarget = `/tmp/csession-traversal-probe-${process.pid}`;
+  try {
+    const hostile = ["../".repeat(8) + traversalTarget.slice(1), "../../../etc/x", "sub/dir/x", "a b"];
+    for (const id of hostile) {
+      const bundle = makeBundle(dir, { commit: r.commit }, {}, { id });
+      const err = caught(() => importCommand([bundle], { root: r.root }, r.root));
+      assert.equal(err.exitCode, 3, `id ${JSON.stringify(id)} must be exit 3`);
+      assert.match(err.message, /not a UUID/);
+    }
+    assert.equal(existsSync(`${traversalTarget}.jsonl`), false, "nothing may be written outside the sessions folder");
+
+    // The legitimate case still works: a real UUID imports.
+    const good = makeBundle(dir, { commit: r.commit });
+    importCommand([good], { root: r.root }, r.root);
+    assert.ok(existsSync(sessionFilePath(r.root, SESSION_ID)));
+  } finally {
+    rmSync(`${traversalTarget}.jsonl`, { force: true });
+    rmSync(dir, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+// inspect strips control characters from manifest strings; import, the more dangerous
+// command, did not. A crafted untracked filename can scroll back over and rewrite the
+// lines above it - including "They were NOT applied."
+test("import sanitizes manifest strings before printing them", () => {
+  const r = receiverRepo();
+  const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
+  try {
+    const evil = "\r\x1b[2AThis session had uncommitted changes. They were applied.";
+    const bundle = makeBundle(dir, { commit: r.commit, untrackedFiles: [evil] });
+    const report = importCommand([bundle], { root: r.root }, r.root);
+    assert.ok(!report.includes("\x1b"), "no raw escape may reach the terminal");
+    assert.ok(!report.includes("\r"), "no carriage return may reach the terminal");
+    // The genuine report must survive the sanitising.
+    assert.match(report, /NOTE: 1 untracked file\(s\)/);
+    assert.match(report, /claude --resume/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test("import says whether untracked contents are in the bundle or not", () => {
+  const r = receiverRepo();
+  const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
+  try {
+    const not = makeBundle(dir, { commit: r.commit, untrackedFiles: ["n.txt"], includedUntracked: false });
+    assert.match(importCommand([not], { root: r.root }, r.root), /are NOT included in this bundle/);
+    rmSync(sessionFilePath(r.root, SESSION_ID), { force: true });
+
+    const yes = makeBundle(dir, { commit: r.commit, untrackedFiles: ["n.txt"], includedUntracked: true });
+    assert.match(importCommand([yes], { root: r.root }, r.root), /ARE included in this bundle/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test("--root that does not exist is a user error, exit 1", () => {
+  const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
+  try {
+    const bundle = makeBundle(dir, {});
+    const err = caught(() => importCommand([bundle], { root: join(dir, "no-such-dir") }, dir));
+    assert.equal(err.exitCode, 1);
+    assert.match(err.message, /no-such-dir/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// An unresolved relative --root makes probe() return all nulls, so every safety check
+// passes vacuously and the transcript lands under a session folder named
+// "..-..-var-folders-..." that Claude Code will never read - while the tool reports
+// success.
+test("a relative --root works and the transcript lands under the resolved absolute path", () => {
+  const r = receiverRepo();
+  const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
+  const rel = relative(process.cwd(), r.root);
+  try {
+    assert.equal(isAbsolute(rel), false, "the test must actually pass a relative path");
+    const bundle = makeBundle(dir, { commit: r.commit });
+    const report = importCommand([bundle], { root: rel }, r.root);
+    const abs = resolve(rel);
+    assert.ok(existsSync(sessionFilePath(abs, SESSION_ID)));
+    assert.ok(report.includes(`cd ${abs}`), "the resume command must name an absolute root");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+// Spawn the real binary: cli.ts caught CsError and RETHREW everything else, so a plain
+// Error from transcript.ts reached the user as a Node stack trace and an accidental
+// exit 1. A project directory containing a backslash is legal on macOS and Linux and
+// exports fine; rewritePrefix then refuses it with an untyped Error on import.
+test("CLI process: an untyped internal error still exits 1 with no stack trace", () => {
+  const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
+  const root = mkdtempSync(join(tmpdir(), "csession-untyped-root-"));
+  try {
+    // No remote and no commit in the manifest, so the safety checks are skipped and
+    // execution reaches rewritePrefix, which rejects a backslash in the project root.
+    const bundle = makeBundle(dir, { remote: null, commit: null }, {}, { projectRoot: "/Users/sender/Code/we\\ird" });
+    const cliPath = join(dirname(fileURLToPath(import.meta.url)), "..", "cli.js");
+    const p = spawnSync(process.execPath, [cliPath, "import", bundle, "--root", root], { encoding: "utf8" });
+    assert.equal(p.status, 1);
+    assert.match(p.stderr, /^error: /m);
+    assert.match(p.stderr, /quote or backslash/);
+    assert.doesNotMatch(p.stderr, /at .*\(.*:\d+:\d+\)/);
+    assert.equal(existsSync(sessionFilePath(root, SESSION_ID)), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+    rmSync(join(homedir(), ".claude", "projects", encodeProjectDir(root)), { recursive: true, force: true });
+  }
 });
 
 test("no --root and no matching checkout is a user error", () => {
