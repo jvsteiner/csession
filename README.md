@@ -14,12 +14,23 @@ csession inspect work.ccsession           # look before you send
 csession import work.ccsession            # rewrites paths, refuses to guess
 ```
 
-Status: **phase 1 implemented.** `list`, `export`, `inspect` and `import` work.
-Deferred: `csession send <host>`, a2a drop-board publishing, and a slash-command wrapper.
+## Install
 
 ```bash
-npm install && npm test    # build and run the suite
-node dist/cli.js --help
+npm i -g csession
 ```
+
+Or from a checkout:
+
+```bash
+git clone git@github.com:jvsteiner/csession.git && cd csession && make install
+```
+
+`make` on its own lists every target. `make demo` runs a full export → import
+round trip in a throwaway sandbox and asserts that the secrets stayed home.
+
+Status: **phase 1.** `list`, `export`, `inspect` and `import` work.
+Deferred: `csession send <host>`, a2a drop-board publishing, and a slash-command
+wrapper. Known gaps: `make snags`.
 
 Design: [docs/superpowers/specs/2026-08-31-csession-design.md](docs/superpowers/specs/2026-08-31-csession-design.md)
