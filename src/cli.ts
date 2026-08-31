@@ -4,6 +4,7 @@ import { CsError } from "./errors.js";
 import { listCommand } from "./commands/list.js";
 import { exportCommand } from "./commands/export.js";
 import { inspectCommand } from "./commands/inspect.js";
+import { importCommand } from "./commands/import.js";
 
 const HELP = `csession - move a Claude Code session between machines
 
@@ -28,6 +29,9 @@ function main(): number {
       return 0;
     case "inspect":
       console.log(inspectCommand(args.positional));
+      return 0;
+    case "import":
+      console.log(importCommand(args.positional, args.flags, process.cwd()));
       return 0;
     case "help":
     case "--help":
