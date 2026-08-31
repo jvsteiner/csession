@@ -1,5 +1,132 @@
 # commitRelation + --worktree — implementation report
 
+## Addendum — coordinator follow-up: the mismatch message never mentioned --worktree
+
+After the initial delivery, the coordinator verified both features work on a real
+repo and on the original user's server (relation sentence reads correctly: "your
+checkout is 249 commits ahead of the bundle (288 files differ)"), but flagged that the
+`SafetyError` itself still only offered `checkout` and `--force` — exactly the two
+exits that started this whole task — and never mentioned `--worktree`, which a user
+would only discover by reading `--help` after already hitting the error.
+
+### Fix
+
+`src/commands/import.ts`:
+- Replaced the fixed "To match it: / Or re-run with --force" tail of the commit-mismatch
+  `SafetyError` with a new `mismatchAdvice(root, bundleCommit, relation)` helper.
+- When `relation.kind !== "unknown"`: prints three options, best first —
+  `--worktree` (does not touch the current checkout), then `--force` (imports anyway,
+  history may describe changed files), then the manual `git -C <root> checkout <sha>`
+  (the one that actually moves the current checkout, so it's last).
+- When `relation.kind === "unknown"`: `--worktree` is **not** offered (it cannot work -
+  there's nothing to check out yet) and the manual line becomes `git -C <root> fetch &&
+  git -C <root> checkout <sha>` instead. Two options are offered there: `--force`, or
+  fetch-then-checkout.
+- The relationship sentence from Feature 1 (`describeRelation`) is untouched and still
+  sits exactly where it was, immediately after the two SHA lines.
+
+### TDD evidence for this fix
+
+Added two tests to `src/commands/import.test.ts`, right after the existing "states how
+the two commits relate" test:
+- `commit mismatch message offers --worktree, best-first, when the commit is known
+  locally` — asserts `--worktree` appears, and appears before `--force`, which appears
+  before the manual `git -C ...` command.
+- `commit mismatch message does NOT offer --worktree when the bundle's commit is
+  unknown locally` — asserts the message does not contain the substring `--worktree`,
+  but does mention fetching and still offers `--force`.
+
+First run of the ordering test failed for an instructive reason, not a wiring gap:
+
+```
+✖ commit mismatch message offers --worktree, best-first, when the commit is known locally
+  AssertionError: --force must be offered before the manual checkout
+```
+
+The naive `indexOf("checkout")` in the test matched the word "checkout" inside the
+relation sentence itself ("your **checkout** is 1 commit ahead...", printed before the
+advice block), not the manual git command further down. Fixed the test to anchor on
+`indexOf("git -C")`, which only appears once, in the manual command line. After that
+fix: full suite green.
+
+```
+$ npm test
+ℹ tests 119
+ℹ pass 119
+ℹ fail 0
+```
+
+Manually rendered both branches of the new message (`node` script against `dist/`,
+using a two-commit repo and a bundle commit not present locally) to eyeball the actual
+wording - both matched the requested shape and ordering:
+
+```
+=== KNOWN COMMIT (local-ahead) ===
+commit mismatch.
+  bundle: 6e779b760010de6d2ee35bc211ea166c8325489c
+  local:  3d4f8ef00532c7d4e530f278d5359f8c9283c58b
+
+your checkout is 1 commit ahead of the bundle (2 files differ)
+
+The conversation assumes the bundle's tree. Three ways forward:
+
+  --worktree    check the bundle's commit out into a separate directory and
+                import there. Your current checkout is not touched.  (best)
+
+  --force       import anyway. The history will describe files that have
+                since changed.
+
+  or match the tree yourself, which moves this checkout:
+                git -C /var/.../csession-preview-oWuD3g checkout 6e779b76...
+
+=== UNKNOWN COMMIT ===
+commit mismatch.
+  bundle: ffffffffffffffffffffffffffffffffffffffff
+  local:  3d4f8ef00532c7d4e530f278d5359f8c9283c58b
+
+the bundle's commit is not in this repository — fetch first
+
+The conversation assumes the bundle's tree, and that commit is not here yet.
+Two ways forward:
+
+  --force       import anyway. The history will describe files that have
+                since changed.
+
+  or fetch it and match the tree yourself, which moves this checkout:
+                git -C /var/.../csession-preview-oWuD3g fetch && git -C ... checkout ffff...
+```
+
+(preview script was written to a scratch file inside the repo so relative dist/
+imports resolved, then deleted; no test-created directories or `~/.claude/projects`
+entries were left behind - verified with the same checks as the original report.)
+
+### Files changed by this addendum
+
+```
+ src/commands/import.test.ts | 42 ++++++++++++++++++++++++++++++++++++++++++
+ src/commands/import.ts      | 37 ++++++++++++++++++++++++++++++++++---
+ 2 files changed, 76 insertions(+), 3 deletions(-)
+```
+
+### Final test count (after this addendum)
+
+119 tests, 119 passing, 0 failing.
+
+### Concerns
+
+- Wording is mine per the coordinator's instruction ("wording is yours, ordering and
+  reasoning are not"); the ordering (`--worktree` best, `--force` second, manual
+  checkout last) and the unknown-commit special case (no `--worktree` offer; fetch
+  instead) both match what was asked for exactly.
+- Kept the existing full 40-character SHA on the `bundle:`/`local:` summary lines
+  rather than switching to the abbreviated 10-character form shown in the
+  coordinator's example - that seemed like illustrative shorthand rather than a
+  requirement, and the full SHA is what the manual checkout command actually needs
+  to be unambiguous regardless of repo size. Flagging in case the abbreviation was
+  intended as a real requirement.
+
+---
+
 ## Discrepancy found before starting (per "STOP and report")
 
 The brief said to read `/Users/jamie/Code/csession/.superpowers/sdd/2026-08-31-csession/constraints.md`

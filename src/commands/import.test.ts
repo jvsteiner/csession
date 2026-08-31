@@ -407,6 +407,48 @@ test("commit mismatch message states how the two commits relate", () => {
   }
 });
 
+// The original complaint was that the tool KNEW a worktree would fix this and never
+// said so - a person only finds --worktree by reading --help, which is not where they
+// look after a command just failed. The mismatch message must offer it directly, and
+// must not offer it when it cannot work (the commit isn't in the repo to check out).
+test("commit mismatch message offers --worktree, best-first, when the commit is known locally", () => {
+  const r = receiverRepoTwoCommits();
+  const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
+  try {
+    const bundle = makeBundle(dir, { commit: r.older });
+    const err = caught(() => importCommand([bundle], { root: r.root }, r.root));
+    assert.equal(err.exitCode, 2);
+
+    const wtIdx = err.message.indexOf("--worktree");
+    const forceIdx = err.message.indexOf("--force");
+    // "checkout" alone also occurs earlier, in "your checkout is N commits ahead..." -
+    // the manual git command is the only place "git -C" appears, so anchor on that.
+    const manualIdx = err.message.indexOf("git -C");
+    assert.ok(wtIdx !== -1, "must mention --worktree");
+    assert.ok(wtIdx < forceIdx, "--worktree must be offered before --force");
+    assert.ok(forceIdx < manualIdx, "--force must be offered before the manual checkout");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test("commit mismatch message does NOT offer --worktree when the bundle's commit is unknown locally", () => {
+  const r = receiverRepo();
+  const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
+  try {
+    const bundle = makeBundle(dir, { commit: "f".repeat(40) });
+    const err = caught(() => importCommand([bundle], { root: r.root }, r.root));
+    assert.equal(err.exitCode, 2);
+    assert.ok(!err.message.includes("--worktree"), "--worktree cannot work on a commit that isn't here");
+    assert.match(err.message, /fetch/i);
+    assert.match(err.message, /--force/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
 // --- --worktree (FEATURE 2) -------------------------------------------------
 
 // The three tests that matter most: the original checkout must not move, the session

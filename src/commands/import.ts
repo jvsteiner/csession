@@ -102,9 +102,7 @@ export function importCommand(
       throw new SafetyError(
         `commit mismatch.\n  bundle: ${safe(m.git.commit)}\n  local:  ${local.commit}\n\n` +
           `${describeRelation(relation)}\n\n` +
-          `The conversation assumes the bundle's tree. To match it:\n` +
-          `  git -C ${root} checkout ${safe(m.git.commit)}\n\n` +
-          `Or re-run with --force to import anyway.`,
+          `${mismatchAdvice(root, m.git.commit, relation)}`,
       );
     }
   }
@@ -148,6 +146,39 @@ function describeRelation(r: CommitRelation): string {
     case "unknown":
       return "the bundle's commit is not in this repository — fetch first";
   }
+}
+
+/**
+ * What a person can actually DO about a commit mismatch, best option first. --worktree
+ * leaves the current checkout alone, so it leads; --force is next because it at least
+ * completes the import (against a tree that may have moved); a manual checkout is
+ * last because it is the one that mutates the checkout the user is standing in.
+ *
+ * --worktree is omitted entirely when the bundle's commit isn't in the repo at all -
+ * offering it there would be a suggestion that cannot work. Fetching is the fix in
+ * that case, so the manual line offers a fetch-then-checkout instead of a bare checkout.
+ */
+function mismatchAdvice(root: string, bundleCommit: string, relation: CommitRelation): string {
+  const force = `  --force       import anyway. The history will describe files that have\n` + `                since changed.`;
+
+  if (relation.kind === "unknown") {
+    return (
+      `The conversation assumes the bundle's tree, and that commit is not here yet.\n` +
+      `Two ways forward:\n\n` +
+      `${force}\n\n` +
+      `  or fetch it and match the tree yourself, which moves this checkout:\n` +
+      `                git -C ${root} fetch && git -C ${root} checkout ${safe(bundleCommit)}`
+    );
+  }
+
+  return (
+    `The conversation assumes the bundle's tree. Three ways forward:\n\n` +
+    `  --worktree    check the bundle's commit out into a separate directory and\n` +
+    `                import there. Your current checkout is not touched.  (best)\n\n` +
+    `${force}\n\n` +
+    `  or match the tree yourself, which moves this checkout:\n` +
+    `                git -C ${root} checkout ${safe(bundleCommit)}`
+  );
 }
 
 function resolveLocalRoot(
