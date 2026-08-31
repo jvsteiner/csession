@@ -75,6 +75,7 @@ FILE             ?=
         test test-e2e test-file check \
         verify-no-deps doctor \
         demo \
+        release release-patch release-minor release-major \
         publish publish-dry publish-check \
         status snags \
         clean distclean
@@ -110,11 +111,13 @@ help:
 	@echo "  Dev:"
 	@echo "    make demo                   full round trip in a throwaway sandbox"
 	@echo ""
-	@echo "  Publish (npm, public):"
+	@echo "  Release (npm, public):"
+	@echo "    make release-patch          0.2.0 -> 0.2.1  test, bump, tag, push, publish"
+	@echo "    make release-minor          0.2.0 -> 0.3.0"
+	@echo "    make release-major          0.2.0 -> 1.0.0"
 	@echo "    make publish-check          run every precondition, change nothing"
 	@echo "    make publish-dry            exactly what would ship, and its size"
-	@echo "    make publish                tag, push the tag, npm publish"
-	@echo "    (bump first: npm version patch|minor|major --prefix $(REPO))"
+	@echo "    make publish                publish the CURRENT version (no bump)"
 	@echo ""
 	@echo "  Info:"
 	@echo "    make status                 git, build state, test and dependency counts"
@@ -259,6 +262,37 @@ demo: build
 VERSION          := $(shell $(NODE) -p "require('$(PKG_JSON)').version")
 PKG_NAME         := $(shell $(NODE) -p "require('$(PKG_JSON)').name")
 
+
+# ----------------------------------------------------------------------------
+# release-* — the whole flow, so nobody has to remember the order.
+#
+# Tests run BEFORE the bump: a failing suite must not leave a version commit
+# behind. `npm version` bumps, commits AND tags in one step, which is why
+# `publish` below only creates a tag when one is genuinely absent.
+# The recursive $(MAKE) is load-bearing: VERSION is expanded when the Makefile
+# is parsed, so publish must re-parse to see the new number.
+# ----------------------------------------------------------------------------
+
+release-patch:
+	@$(MAKE) -C $(REPO) --no-print-directory release BUMP=patch
+
+release-minor:
+	@$(MAKE) -C $(REPO) --no-print-directory release BUMP=minor
+
+release-major:
+	@$(MAKE) -C $(REPO) --no-print-directory release BUMP=major
+
+release: check
+	@test -n "$(BUMP)" || { echo "error: use release-patch, release-minor or release-major"; exit 1; }
+	@test -z "$$($(GIT) $(GIT_FLAGS) status --porcelain)" \
+	  || { echo "error: uncommitted changes — commit them before releasing"; exit 1; }
+	@test "$$($(GIT) $(GIT_FLAGS) rev-parse --abbrev-ref HEAD)" = "main" \
+	  || { echo "error: releases happen from main"; exit 1; }
+	@echo "==> bumping $(BUMP) from $(VERSION)"
+	$(NPM) $(NPM_FLAGS) version $(BUMP)
+	$(GIT) $(GIT_FLAGS) push origin main
+	@$(MAKE) -C $(REPO) --no-print-directory publish
+
 publish-check:
 	@fail=0 ; \
 	printf "  %-34s" "licence declared" ; \
@@ -279,8 +313,10 @@ publish-check:
 	  if [ -z "$$who" ]; then echo "NO — run: npm login"; fail=1 ; else echo "ok ($$who)" ; fi ; \
 	printf "  %-34s" "version $(VERSION) unpublished" ; \
 	  if $(NPM) view $(PKG_NAME)@$(VERSION) version >/dev/null 2>&1; then echo "NO — already on npm"; fail=1 ; else echo "ok" ; fi ; \
-	printf "  %-34s" "tag v$(VERSION) free" ; \
-	  if $(GIT) $(GIT_FLAGS) rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null; then echo "NO — tag exists"; fail=1 ; else echo "ok" ; fi ; \
+	printf "  %-34s" "tag v$(VERSION)" ; \
+	  if ! $(GIT) $(GIT_FLAGS) rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null; then echo "ok (absent — publish will create it)" ; \
+	  elif [ "$$($(GIT) $(GIT_FLAGS) rev-parse 'v$(VERSION)^{commit}')" = "$$($(GIT) $(GIT_FLAGS) rev-parse HEAD)" ]; then echo "ok (exists, on HEAD — npm version made it)" ; \
+	  else echo "NO — tag exists but points elsewhere"; fail=1 ; fi ; \
 	echo "" ; \
 	if [ $$fail -ne 0 ]; then echo "publish-check FAILED — fix the above first"; exit 1 ; fi ; \
 	echo "publish-check passed for $(PKG_NAME)@$(VERSION)"
@@ -295,7 +331,10 @@ publish: publish-check check
 	@echo ""
 	@echo "==> publishing $(PKG_NAME)@$(VERSION) to the public npm registry"
 	$(NPM) $(NPM_FLAGS) publish --access public
-	$(GIT) $(GIT_FLAGS) tag -a "v$(VERSION)" -m "$(PKG_NAME) v$(VERSION)"
+	@# `npm version` already tags. Only create the tag when it is genuinely absent;
+	@# publish-check has already proved any existing tag points at HEAD.
+	@$(GIT) $(GIT_FLAGS) rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null \
+	  || $(GIT) $(GIT_FLAGS) tag -a "v$(VERSION)" -m "$(PKG_NAME) v$(VERSION)"
 	$(GIT) $(GIT_FLAGS) push origin "v$(VERSION)"
 	@echo "==> published, and tagged v$(VERSION)"
 	@echo "==> install with: npm i -g $(PKG_NAME)"
