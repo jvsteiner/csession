@@ -14,7 +14,13 @@ const HELP = `csession - move a Claude Code session between machines
   csession import FILE [options]              receive a bundle
 
 export options:  --dry-run  --include-untracked  --paranoid  --no-redact
-import options:  --root PATH  --new-id  --force
+import options:  --root PATH  --new-id  --force  --worktree
+
+  --worktree   on a commit mismatch, import into a new git worktree checked out
+               at the bundle's commit instead of refusing - the current
+               checkout is left untouched. Still refuses on any OTHER mismatch
+               (remote, schema, id collision). Wins over --force if both are
+               given, since it makes the tree actually match.
 
 exit codes: 0 ok, 1 user error, 2 safety refusal, 3 corrupt bundle`;
 

@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { writeFileSync, mkdtempSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname, basename } from "node:path";
 import { readBundle, atomicWrite } from "../bundle.js";
 import { parseManifest } from "../manifest.js";
 import { readLines, rewritePrefix, replaceAllText, unresolvedAbsolutePaths, sha256 } from "../transcript.js";
-import { probe, applyCheck } from "../git.js";
+import { probe, applyCheck, commitRelation, addWorktree, type CommitRelation } from "../git.js";
 import { sessionFilePath } from "../paths.js";
 import { resolveProjectRoot } from "../args.js";
 import { UserError, SafetyError, CorruptBundleError } from "../errors.js";
@@ -50,8 +50,9 @@ export function importCommand(
     );
   }
 
-  const root = resolveLocalRoot(flags, cwd, m.git.remote);
+  let root = resolveLocalRoot(flags, cwd, m.git.remote);
   const force = flags["force"] === true;
+  const useWorktree = flags["worktree"] === true;
   const local = probe(root);
 
   // Every `m.*` below is a manifest string - see sanitize.ts. `local.*` and `root` are
@@ -63,13 +64,49 @@ export function importCommand(
     );
   }
 
-  if (m.git.commit && local.commit && m.git.commit !== local.commit && !force) {
-    throw new SafetyError(
-      `commit mismatch.\n  bundle: ${safe(m.git.commit)}\n  local:  ${local.commit}\n\n` +
-        `The conversation assumes the bundle's tree. To match it:\n` +
-        `  git -C ${root} checkout ${safe(m.git.commit)}\n\n` +
-        `Or re-run with --force to import anyway.`,
-    );
+  // --worktree addresses ONLY this check. It never reaches the code below when the
+  // commit already matches, and it runs after the remote check above, so it can never
+  // paper over a mismatch that check would have caught.
+  let worktreeOrigin: string | null = null;
+  if (m.git.commit && local.commit && m.git.commit !== local.commit) {
+    const relation = commitRelation(root, m.git.commit, local.commit);
+    if (useWorktree) {
+      // Creating a worktree at a commit that does not exist locally is not possible -
+      // this is the receiver-has-not-fetched case, and it needs its own instruction.
+      if (relation.kind === "unknown") {
+        throw new UserError(
+          `the bundle's commit ${safe(m.git.commit)} is not in ${root}.\n` +
+            `Fetch it first, then re-run with --worktree.`,
+        );
+      }
+      const wtPath = join(dirname(root), `${basename(root)}-csession-${m.git.commit.slice(0, 8)}`);
+      // Never reuse or overwrite whatever is already at that path - it might not even
+      // be a worktree of this repo.
+      if (existsSync(wtPath)) {
+        throw new UserError(
+          `a worktree path already exists at ${wtPath}. Remove it (or move it aside) and re-run.`,
+        );
+      }
+      try {
+        addWorktree(root, wtPath, m.git.commit);
+      } catch (e) {
+        throw new UserError(
+          `could not create a worktree at ${wtPath}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+      // The worktree becomes the effective root for everything below: the path
+      // rewrite, the session file location, and the resume command.
+      worktreeOrigin = root;
+      root = wtPath;
+    } else if (!force) {
+      throw new SafetyError(
+        `commit mismatch.\n  bundle: ${safe(m.git.commit)}\n  local:  ${local.commit}\n\n` +
+          `${describeRelation(relation)}\n\n` +
+          `The conversation assumes the bundle's tree. To match it:\n` +
+          `  git -C ${root} checkout ${safe(m.git.commit)}\n\n` +
+          `Or re-run with --force to import anyway.`,
+      );
+    }
   }
 
   const newId = flags["new-id"] === true ? randomUUID() : m.session.id;
@@ -90,7 +127,27 @@ export function importCommand(
 
   atomicWrite(dest, lines.join("\n") + "\n");
 
-  return buildReport(m, root, newId, rewritten.replaced, unresolved, files, force);
+  return buildReport(m, root, newId, rewritten.replaced, unresolved, files, force, worktreeOrigin);
+}
+
+/**
+ * The relationship is the fact that decides what to do next: 3 commits ahead is
+ * nothing like a genuine divergence, but two raw SHAs read identically until a human
+ * works it out by hand.
+ */
+function describeRelation(r: CommitRelation): string {
+  switch (r.kind) {
+    case "same":
+      return "the two commits are the same";
+    case "local-ahead":
+      return `your checkout is ${r.commits} commit${r.commits === 1 ? "" : "s"} ahead of the bundle (${r.files} file${r.files === 1 ? "" : "s"} differ)`;
+    case "local-behind":
+      return `your checkout is ${r.commits} commit${r.commits === 1 ? "" : "s"} behind the bundle (${r.files} file${r.files === 1 ? "" : "s"} differ)`;
+    case "diverged":
+      return "the two commits have diverged";
+    case "unknown":
+      return "the bundle's commit is not in this repository — fetch first";
+  }
 }
 
 function resolveLocalRoot(
@@ -138,8 +195,15 @@ function buildReport(
   unresolved: string[],
   files: Record<string, string>,
   force: boolean,
+  worktreeOrigin: string | null,
 ): string {
   const l: string[] = [];
+  if (worktreeOrigin) {
+    l.push(`Created a git worktree at the bundle's commit: ${root}`);
+    l.push(`  your checkout at ${worktreeOrigin} was not touched`);
+    l.push(`  to remove the worktree:  git -C ${worktreeOrigin} worktree remove ${root}`);
+    l.push("");
+  }
   l.push(`session ${newId}  (${m.session.recordCount} records)`);
   if (newId !== m.session.id) l.push(`  (original id was ${safe(m.session.id)})`);
   l.push(`${replaced} paths rewritten to ${root}`);

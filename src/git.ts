@@ -80,3 +80,50 @@ export function applyCheck(root: string, patchPath: string): { ok: boolean; outp
   const r = run(root, ["apply", "--check", patchPath]);
   return { ok: r.ok, output: r.stderr || r.stdout };
 }
+
+export type CommitRelation =
+  | { kind: "same" }
+  | { kind: "local-ahead"; commits: number; files: number }
+  | { kind: "local-behind"; commits: number; files: number }
+  | { kind: "diverged" }
+  | { kind: "unknown" }; // a commit not present locally, or not a repo
+
+function countLines(s: string): number {
+  return s === "" ? 0 : s.split("\n").length;
+}
+
+/**
+ * How the local HEAD relates to the bundle's commit. `import` prints two SHAs
+ * otherwise, and the relationship is the fact that decides what to do: being
+ * 3 commits ahead is very different from having diverged.
+ */
+export function commitRelation(root: string, bundleCommit: string, localCommit: string): CommitRelation {
+  if (bundleCommit === localCommit) return { kind: "same" };
+
+  // A receiver who has not fetched the bundle's commit is a normal case, not an error.
+  if (!run(root, ["cat-file", "-e", `${bundleCommit}^{commit}`]).ok) {
+    return { kind: "unknown" };
+  }
+
+  if (run(root, ["merge-base", "--is-ancestor", bundleCommit, localCommit]).ok) {
+    const commits = Number(run(root, ["rev-list", "--count", `${bundleCommit}..${localCommit}`]).stdout);
+    const files = countLines(run(root, ["diff", "--name-only", `${bundleCommit}..${localCommit}`]).stdout);
+    return { kind: "local-ahead", commits, files };
+  }
+
+  if (run(root, ["merge-base", "--is-ancestor", localCommit, bundleCommit]).ok) {
+    const commits = Number(run(root, ["rev-list", "--count", `${localCommit}..${bundleCommit}`]).stdout);
+    const files = countLines(run(root, ["diff", "--name-only", `${localCommit}..${bundleCommit}`]).stdout);
+    return { kind: "local-behind", commits, files };
+  }
+
+  return { kind: "diverged" };
+}
+
+/** Creates a detached worktree at `commit`. Does not touch the current checkout. */
+export function addWorktree(root: string, path: string, commit: string): void {
+  const r = run(root, ["worktree", "add", "--detach", path, commit]);
+  if (!r.ok) {
+    throw new Error(r.stderr);
+  }
+}

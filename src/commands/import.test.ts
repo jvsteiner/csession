@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { caught } from "../testutil.js";
 import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync, mkdirSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
-import { join, dirname, relative, resolve, isAbsolute } from "node:path";
+import { join, dirname, basename, relative, resolve, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
 import { writeBundle } from "../bundle.js";
@@ -34,6 +34,50 @@ function receiverRepo(): { root: string; commit: string; cleanup: () => void } {
       rmSync(join(homedir(), ".claude", "projects", encodeProjectDir(root)), { recursive: true, force: true });
     },
   };
+}
+
+/**
+ * Two commits, ending on a NAMED branch ("feature") rather than detached - the
+ * commit-relation and --worktree tests need real ancestry (an "older" and a "newer"
+ * commit) plus a branch to prove the original checkout is not moved off of.
+ */
+function receiverRepoTwoCommits(): { root: string; older: string; newer: string; cleanup: () => void } {
+  const root = mkdtempSync(join(tmpdir(), "csession-imp-"));
+  const g = (...a: string[]) => execFileSync("git", a, { cwd: root, encoding: "utf8" }).trim();
+  g("init", "-q", "-b", "main");
+  g("config", "user.email", "t@example.com");
+  g("config", "user.name", "T");
+  g("remote", "add", "origin", "git@github.com:o/r.git");
+  writeFileSync(join(root, "a.txt"), "one\n");
+  g("add", "-A");
+  g("commit", "-q", "-m", "init");
+  const older = g("rev-parse", "HEAD");
+  writeFileSync(join(root, "a.txt"), "two\n");
+  writeFileSync(join(root, "b.txt"), "new\n");
+  g("add", "-A");
+  g("commit", "-q", "-m", "second");
+  const newer = g("rev-parse", "HEAD");
+  g("checkout", "-q", "-b", "feature");
+  return {
+    root,
+    older,
+    newer,
+    cleanup: () => {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(join(homedir(), ".claude", "projects", encodeProjectDir(root)), { recursive: true, force: true });
+    },
+  };
+}
+
+/** Best-effort teardown for a worktree created by importCommand in a test. */
+function removeWorktree(root: string, wtPath: string): void {
+  try {
+    execFileSync("git", ["worktree", "remove", "--force", wtPath], { cwd: root });
+  } catch {
+    // best-effort: fall through to the raw rmSync below regardless
+  }
+  rmSync(wtPath, { recursive: true, force: true });
+  rmSync(join(homedir(), ".claude", "projects", encodeProjectDir(wtPath)), { recursive: true, force: true });
 }
 
 function makeBundle(
@@ -339,5 +383,175 @@ test("no --root and no matching checkout is a user error", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(elsewhere, { recursive: true, force: true });
+  }
+});
+
+// --- commit relationship reporting (FEATURE 1) -----------------------------
+
+// Two SHAs with no stated relationship forced a human to work out, unaided, that being
+// 249 commits ahead is nothing like a genuine divergence. commitRelation() computes
+// that relationship; this proves the sentence it produces actually reaches the report.
+test("commit mismatch message states how the two commits relate", () => {
+  const r = receiverRepoTwoCommits();
+  const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
+  try {
+    const bundle = makeBundle(dir, { commit: r.older });
+    const err = caught(() => importCommand([bundle], { root: r.root }, r.root));
+    assert.equal(err.exitCode, 2);
+    assert.match(err.message, /ahead of the bundle/);
+    assert.match(err.message, /1 commit/);
+    assert.match(err.message, /2 files? differ/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+// --- --worktree (FEATURE 2) -------------------------------------------------
+
+// The three tests that matter most: the original checkout must not move, the session
+// must land in the worktree (paths rewritten to IT, not the original root), and an
+// unfetched commit must fail cleanly rather than create a worktree at nothing.
+
+test("--worktree imports into a new worktree at the bundle's commit, leaving the current checkout untouched", () => {
+  const r = receiverRepoTwoCommits();
+  const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
+  const wtPath = join(dirname(r.root), `${basename(r.root)}-csession-${r.older.slice(0, 8)}`);
+  const branchBefore = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: r.root, encoding: "utf8" }).trim();
+  try {
+    const bundle = makeBundle(dir, { commit: r.older });
+    const report = importCommand([bundle], { root: r.root, worktree: true }, r.root);
+
+    // The session lands in the worktree, not the original root, with paths rewritten to it.
+    assert.ok(existsSync(sessionFilePath(wtPath, SESSION_ID)));
+    assert.equal(existsSync(sessionFilePath(r.root, SESSION_ID)), false);
+    const text = readFileSync(sessionFilePath(wtPath, SESSION_ID), "utf8");
+    assert.ok(text.includes(`${wtPath}/a.txt`));
+    assert.ok(!text.includes(SENDER_ROOT));
+    assert.ok(!text.includes(`${r.root}/a.txt`), "must be rewritten to the worktree, not the original root");
+    assert.match(report, /worktree/i);
+    assert.match(report, new RegExp(`cd ${wtPath}`));
+    assert.match(report, new RegExp(`worktree remove ${wtPath}`));
+
+    // The current checkout is untouched: same branch, no diff.
+    assert.equal(
+      execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: r.root, encoding: "utf8" }).trim(),
+      branchBefore,
+    );
+    assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: r.root, encoding: "utf8" }), "");
+  } finally {
+    removeWorktree(r.root, wtPath);
+    rmSync(dir, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test("--worktree with a commit not present locally fails with a UserError and creates no worktree", () => {
+  const r = receiverRepo();
+  const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
+  const missing = "f".repeat(40);
+  const wtPath = join(dirname(r.root), `${basename(r.root)}-csession-${missing.slice(0, 8)}`);
+  try {
+    const bundle = makeBundle(dir, { commit: missing });
+    const err = caught(() => importCommand([bundle], { root: r.root, worktree: true }, r.root));
+    assert.equal(err.exitCode, 1);
+    assert.match(err.message, /fetch/i);
+    assert.equal(existsSync(wtPath), false);
+    assert.equal(existsSync(sessionFilePath(r.root, SESSION_ID)), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test("--worktree wins when combined with --force", () => {
+  const r = receiverRepoTwoCommits();
+  const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
+  const wtPath = join(dirname(r.root), `${basename(r.root)}-csession-${r.older.slice(0, 8)}`);
+  try {
+    const bundle = makeBundle(dir, { commit: r.older });
+    importCommand([bundle], { root: r.root, worktree: true, force: true }, r.root);
+    assert.ok(existsSync(wtPath), "a worktree must still be created even though --force was also passed");
+    assert.equal(existsSync(sessionFilePath(r.root, SESSION_ID)), false, "the session must not land in the original root");
+  } finally {
+    removeWorktree(r.root, wtPath);
+    rmSync(dir, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test("--worktree does not bypass the remote mismatch check", () => {
+  const r = receiverRepoTwoCommits();
+  const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
+  const wtPath = join(dirname(r.root), `${basename(r.root)}-csession-${r.older.slice(0, 8)}`);
+  try {
+    const bundle = makeBundle(dir, { commit: r.older, remote: "git@github.com:other/repo.git" });
+    const err = caught(() => importCommand([bundle], { root: r.root, worktree: true }, r.root));
+    assert.equal(err.exitCode, 2);
+    assert.match(err.message, /remote mismatch/);
+    assert.equal(existsSync(wtPath), false, "no worktree should be created when the remote check refuses first");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test("--worktree does not bypass the transcript checksum check", () => {
+  const r = receiverRepoTwoCommits();
+  const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
+  try {
+    const manifest = {
+      schema: SCHEMA,
+      createdAt: "2026-08-31T09:14:22.000Z",
+      session: { id: SESSION_ID, projectRoot: SENDER_ROOT, recordCount: 1, sha256: "0".repeat(64), claudeVersions: [] },
+      git: { remote: "git@github.com:o/r.git", branch: "main", commit: r.older, dirty: false, untrackedFiles: [] },
+      redaction: { applied: true, paranoid: false, hits: [] },
+    };
+    const out = join(dir, "bad.ccsession");
+    writeBundle(out, { "manifest.json": JSON.stringify(manifest), "session.jsonl": "{}\n" });
+    const err = caught(() => importCommand([out], { root: r.root, worktree: true }, r.root));
+    assert.equal(err.exitCode, 3);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test("--worktree refuses to reuse an existing path at that location", () => {
+  const r = receiverRepoTwoCommits();
+  const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
+  const wtPath = join(dirname(r.root), `${basename(r.root)}-csession-${r.older.slice(0, 8)}`);
+  try {
+    const bundle = makeBundle(dir, { commit: r.older });
+    importCommand([bundle], { root: r.root, worktree: true }, r.root); // first import creates the worktree
+
+    const err = caught(() => importCommand([bundle], { root: r.root, worktree: true }, r.root));
+    assert.equal(err.exitCode, 1);
+    assert.match(err.message, new RegExp(wtPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  } finally {
+    removeWorktree(r.root, wtPath);
+    rmSync(dir, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test("--worktree still enforces the session id collision check, against the worktree's own session folder", () => {
+  const r = receiverRepoTwoCommits();
+  const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
+  const wtPath = join(dirname(r.root), `${basename(r.root)}-csession-${r.older.slice(0, 8)}`);
+  try {
+    const bundle = makeBundle(dir, { commit: r.older });
+    // Pre-create a colliding session file in the ~/.claude/projects folder the
+    // worktree will map to - the worktree checkout itself does not exist yet.
+    mkdirSync(dirname(sessionFilePath(wtPath, SESSION_ID)), { recursive: true });
+    writeFileSync(sessionFilePath(wtPath, SESSION_ID), "existing\n");
+
+    const err = caught(() => importCommand([bundle], { root: r.root, worktree: true }, r.root));
+    assert.equal(err.exitCode, 2);
+    assert.match(err.message, /already exists/);
+  } finally {
+    removeWorktree(r.root, wtPath);
+    rmSync(dir, { recursive: true, force: true });
+    r.cleanup();
   }
 });
