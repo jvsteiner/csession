@@ -52,7 +52,14 @@ GIT              ?= git
 TSC              := $(NODE_MODULES)/.bin/tsc
 
 # --prefix / --project / -C — the "no cd" flags for each tool.
+# NPM_FLAGS is correct for LOCAL installs only. `npm --prefix X` sets npm's
+# GLOBAL prefix, so using it with `npm link` links into X/bin instead of the
+# real global bin — which is why link/unlink below symlink by hand instead.
 NPM_FLAGS        := --prefix $(REPO)
+
+# The real npm global bin, resolved without --prefix.
+NPM_GLOBAL_BIN   := $(shell $(NPM) config get prefix)/bin
+CSESSION_LINK    := $(NPM_GLOBAL_BIN)/csession
 TSC_FLAGS        := --project $(TSCONFIG)
 GIT_FLAGS        := -C $(REPO)
 
@@ -70,7 +77,7 @@ FILE             ?=
 FLAGS            ?=
 
 .PHONY: help \
-        install install-clean link unlink \
+        deps deps-clean install uninstall \
         build watch typecheck \
         test test-unit test-commands test-e2e test-file check \
         verify-no-deps doctor \
@@ -87,10 +94,10 @@ help:
 	@echo "csession — move a Claude Code session between machines"
 	@echo ""
 	@echo "  Setup:"
-	@echo "    make install                npm install (typescript + @types/node only)"
-	@echo "    make install-clean          npm ci — reproducible, from the lockfile"
-	@echo "    make link                   npm link, putting \`csession\` on your PATH"
-	@echo "    make unlink                 undo make link"
+	@echo "    make install                put \`csession\` on your PATH"
+	@echo "    make uninstall              remove it again"
+	@echo "    make deps                   build dependencies (typescript + @types/node)"
+	@echo "    make deps-clean             npm ci — reproducible, from the lockfile"
 	@echo ""
 	@echo "  Build:"
 	@echo "    make build                  tsc — compile src/ to dist/"
@@ -135,19 +142,39 @@ help:
 # Setup
 # ============================================================================
 
-install:
+# Build dependencies only. Named `deps`, not `install`, because `make install`
+# on a CLI should install the CLI — see the target below.
+deps:
 	$(NPM) $(NPM_FLAGS) install
 
 # Reproducible install from package-lock.json. Use in CI and after a pull.
-install-clean:
+deps-clean:
 	$(NPM) $(NPM_FLAGS) ci
 
-link: build
-	$(NPM) $(NPM_FLAGS) link
-	@echo "==> \`csession\` is now on your PATH: $$(command -v csession || echo '(not found — check your npm prefix)')"
+# `make install` puts the CLI on your PATH — the thing you actually want.
+# Symlink by hand rather than `npm link`. npm's global link cannot be aimed
+# without cd-ing into the package, and `npm --prefix` aims it at the wrong
+# place entirely. One symlink is explicit, and unlink can verify what it
+# removes instead of deleting someone else's csession.
+install: build
+	@mkdir -p $(NPM_GLOBAL_BIN)
+	@chmod +x $(CLI_ENTRY)
+	@ln -sfn $(CLI_ENTRY) $(CSESSION_LINK)
+	@echo "==> linked $(CSESSION_LINK) -> $(CLI_ENTRY)"
+	@case ":$$PATH:" in \
+	  *":$(NPM_GLOBAL_BIN):"*) echo "==> on your PATH: $$(command -v csession)" ;; \
+	  *) echo "==> WARNING: $(NPM_GLOBAL_BIN) is not on your PATH; add it or call the link directly" ;; \
+	esac
 
-unlink:
-	$(NPM) $(NPM_FLAGS) unlink -g csession || true
+# Only removes a link that points at THIS checkout.
+uninstall:
+	@if [ ! -L "$(CSESSION_LINK)" ]; then \
+	   echo "==> nothing to remove at $(CSESSION_LINK)" ; \
+	 elif [ "$$(readlink $(CSESSION_LINK))" = "$(CLI_ENTRY)" ]; then \
+	   rm -f $(CSESSION_LINK) ; echo "==> removed $(CSESSION_LINK)" ; \
+	 else \
+	   echo "==> refusing: $(CSESSION_LINK) points at $$(readlink $(CSESSION_LINK)), not this checkout" ; exit 1 ; \
+	 fi
 
 # ============================================================================
 # Build
