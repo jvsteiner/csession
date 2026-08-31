@@ -65,7 +65,7 @@ test("import rewrites the project root and writes the transcript", () => {
     const text = readFileSync(dest, "utf8");
     assert.ok(text.includes(`${r.root}/a.txt`));
     assert.ok(!text.includes(SENDER_ROOT));
-    assert.match(report, /4 paths rewritten/);
+    assert.match(report, /3 paths rewritten/);
     assert.match(report, /claude --resume/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -94,7 +94,7 @@ test("a commit mismatch refuses with exit 2 and writes nothing", () => {
     const bundle = makeBundle(dir, { commit: "f".repeat(40) });
     const err = caught(() => importCommand([bundle], { root: r.root }, r.root));
     assert.equal(err.exitCode, 2);
-    assert.match(err.message, /git checkout/);
+    assert.match(err.message, /git -C .* checkout/);
     assert.equal(existsSync(sessionFilePath(r.root, SESSION_ID)), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -183,7 +183,7 @@ test("a patch is reported and NEVER applied", () => {
 
     const bundle = makeBundle(dir, { commit: r.commit, dirty: true }, { "uncommitted.patch": realPatch });
     const report = importCommand([bundle], { root: r.root }, r.root);
-    assert.match(report, /git apply/);
+    assert.match(report, /git -C .* apply/);
     assert.equal(readFileSync(join(r.root, "a.txt"), "utf8"), "one\n"); // untouched
   } finally {
     rmSync(dir, { recursive: true, force: true });
