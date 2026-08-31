@@ -3,6 +3,7 @@ import { parseArgs } from "./args.js";
 import { CsError } from "./errors.js";
 import { listCommand } from "./commands/list.js";
 import { exportCommand } from "./commands/export.js";
+import { inspectCommand } from "./commands/inspect.js";
 
 const HELP = `csession - move a Claude Code session between machines
 
@@ -24,6 +25,9 @@ function main(): number {
       return 0;
     case "export":
       console.log(exportCommand(args.positional, args.flags, process.cwd(), new Date()));
+      return 0;
+    case "inspect":
+      console.log(inspectCommand(args.positional));
       return 0;
     case "help":
     case "--help":
