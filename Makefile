@@ -66,25 +66,18 @@ GIT_FLAGS        := -C $(REPO)
 # Minimum runtime. Enforced by `make doctor`, mirrors package.json engines.
 NODE_MIN_MAJOR   := 20
 
-# ----- CLI target arguments -------------------------------------------------
-# Overridable on the command line, e.g. `make inspect BUNDLE=/tmp/x.ccsession`
-SESSION          ?=
-BUNDLE           ?=
-OUT              ?=
-ROOT             ?=
-PROJECT          ?=
+# ----- Target arguments ------------------------------------------------------
+# Overridable on the command line, e.g. `make test-file FILE=redact`
 FILE             ?=
-FLAGS            ?=
-
 .PHONY: help \
         deps deps-clean install uninstall \
         build watch typecheck \
-        test test-unit test-commands test-e2e test-file check \
+        test test-e2e test-file check \
         verify-no-deps doctor \
-        cli list export inspect import \
-        demo demo-clean \
-        status sessions snags spec plan \
-        clean clean-dist clean-node clean-sandbox distclean
+        demo \
+        publish publish-dry publish-check \
+        status snags \
+        clean distclean
 
 # ============================================================================
 # Default — surface listing.
@@ -106,8 +99,6 @@ help:
 	@echo ""
 	@echo "  Test:"
 	@echo "    make test                   build, then every suite"
-	@echo "    make test-unit              module tests only (src/*.test.ts)"
-	@echo "    make test-commands          command tests only (src/commands/*.test.ts)"
 	@echo "    make test-e2e               the export -> import round trip"
 	@echo "    make test-file FILE=redact  one module, e.g. FILE=transcript"
 	@echo "    make check                  typecheck + full suite + no-deps guard"
@@ -116,26 +107,21 @@ help:
 	@echo "    make verify-no-deps         fail if any runtime dependency appears"
 	@echo "    make doctor                 node >= $(NODE_MIN_MAJOR), git, tar, build state"
 	@echo ""
-	@echo "  Run the CLI (each builds first):"
-	@echo "    make cli FLAGS='--help'     arbitrary invocation"
-	@echo "    make list [PROJECT=path]    sessions for a project, newest first"
-	@echo "    make export SESSION=id OUT=file [FLAGS='--dry-run']"
-	@echo "    make inspect BUNDLE=file    manifest + reports, extracts nothing"
-	@echo "    make import BUNDLE=file [ROOT=path] [FLAGS='--force']"
-	@echo ""
 	@echo "  Dev:"
 	@echo "    make demo                   full round trip in a throwaway sandbox"
-	@echo "    make demo-clean             remove the sandbox"
+	@echo ""
+	@echo "  Publish (npm, public):"
+	@echo "    make publish-check          run every precondition, change nothing"
+	@echo "    make publish-dry            exactly what would ship, and its size"
+	@echo "    make publish                tag, push the tag, npm publish"
+	@echo "    (bump first: npm version patch|minor|major --prefix $(REPO))"
 	@echo ""
 	@echo "  Info:"
 	@echo "    make status                 git, build state, test and dependency counts"
-	@echo "    make sessions               projects with sessions in $(SESSIONS_DIR)"
 	@echo "    make snags                  known gaps, from the spec and the reviews"
-	@echo "    make spec / make plan       paths to the design docs"
 	@echo ""
 	@echo "  Cleanup:"
 	@echo "    make clean                  dist/ and the demo sandbox"
-	@echo "    make clean-node             node_modules/"
 	@echo "    make distclean              everything reproducible from git"
 
 # ============================================================================
@@ -203,11 +189,6 @@ typecheck: $(NODE_MODULES)
 test: build
 	$(NODE) --test "$(TEST_ALL)"
 
-test-unit: build
-	$(NODE) --test "$(TEST_UNIT)"
-
-test-commands: build
-	$(NODE) --test "$(TEST_COMMANDS)"
 
 test-e2e: build
 	$(NODE) --test "$(TEST_E2E)"
@@ -254,35 +235,6 @@ doctor:
 	@test -d "$(SESSIONS_DIR)" && echo "  $(SESSIONS_DIR)  ok" || echo "  $(SESSIONS_DIR)  absent (no sessions yet)"
 	@echo "==> build"
 	@test -f "$(CLI_ENTRY)" && echo "  $(CLI_ENTRY)  ok" || echo "  $(CLI_ENTRY)  not built — run make build"
-
-# ============================================================================
-# Run the CLI
-#
-# Each target builds first, so you never run a stale dist/. FLAGS passes
-# anything through: make export SESSION=x OUT=/tmp/x.ccsession FLAGS='--dry-run'
-# ============================================================================
-
-cli: build
-	@$(NODE) $(CLI_ENTRY) $(FLAGS)
-
-list: build
-	@$(NODE) $(CLI_ENTRY) list $(if $(PROJECT),--project $(PROJECT),) $(FLAGS)
-
-export: build
-	@test -n "$(SESSION)" || { echo "error: SESSION is required, e.g. make export SESSION=<uuid> OUT=/tmp/x.ccsession"; exit 1; }
-	@test -n "$(OUT)" || { echo "error: OUT is required, e.g. make export SESSION=<uuid> OUT=/tmp/x.ccsession"; exit 1; }
-	@$(NODE) $(CLI_ENTRY) export $(SESSION) -o $(OUT) $(FLAGS)
-
-inspect: build
-	@test -n "$(BUNDLE)" || { echo "error: BUNDLE is required, e.g. make inspect BUNDLE=/tmp/x.ccsession"; exit 1; }
-	@$(NODE) $(CLI_ENTRY) inspect $(BUNDLE) $(FLAGS)
-
-# No default for ROOT on purpose. import refuses to guess where a repo lives,
-# and this target must not paper over that by silently supplying $(REPO).
-import: build
-	@test -n "$(BUNDLE)" || { echo "error: BUNDLE is required, e.g. make import BUNDLE=/tmp/x.ccsession"; exit 1; }
-	@$(NODE) $(CLI_ENTRY) import $(BUNDLE) $(if $(ROOT),--root $(ROOT),) $(FLAGS)
-
 # ============================================================================
 # Demo — a real round trip you can watch
 #
@@ -295,7 +247,58 @@ import: build
 demo: build
 	@bash $(REPO)/scripts/demo.sh "$(SANDBOX)" "$(CLI_ENTRY)" "$(SESSIONS_DIR)"
 
-demo-clean: clean-sandbox
+
+# ============================================================================
+# Publish — npm, public
+#
+# `publish` refuses unless every precondition holds. Publishing is close to
+# irreversible: npm blocks un-publishing after 72 hours, so the guards are the
+# feature. Run `publish-check` any time to see where you stand.
+# ============================================================================
+
+VERSION          := $(shell $(NODE) -p "require('$(PKG_JSON)').version")
+PKG_NAME         := $(shell $(NODE) -p "require('$(PKG_JSON)').name")
+
+publish-check:
+	@fail=0 ; \
+	printf "  %-34s" "licence declared" ; \
+	  lic=$$($(NODE) -p "require('$(PKG_JSON)').license") ; \
+	  if [ "$$lic" = "UNLICENSED" ] || [ -z "$$lic" ]; then echo "NO — license is '$$lic'"; fail=1 ; \
+	  elif [ ! -f "$(REPO)/LICENSE" ]; then echo "NO — $$lic declared but no LICENSE file"; fail=1 ; \
+	  else echo "ok ($$lic)" ; fi ; \
+	printf "  %-34s" "working tree clean" ; \
+	  if [ -n "$$($(GIT) $(GIT_FLAGS) status --porcelain)" ]; then echo "NO — uncommitted changes"; fail=1 ; else echo "ok" ; fi ; \
+	printf "  %-34s" "on main, synced with origin" ; \
+	  br=$$($(GIT) $(GIT_FLAGS) rev-parse --abbrev-ref HEAD) ; \
+	  $(GIT) $(GIT_FLAGS) fetch -q origin 2>/dev/null || true ; \
+	  if [ "$$br" != "main" ]; then echo "NO — on $$br"; fail=1 ; \
+	  elif [ "$$($(GIT) $(GIT_FLAGS) rev-parse HEAD)" != "$$($(GIT) $(GIT_FLAGS) rev-parse origin/main)" ]; then echo "NO — main and origin/main differ"; fail=1 ; \
+	  else echo "ok" ; fi ; \
+	printf "  %-34s" "logged in to npm" ; \
+	  who=$$($(NPM) whoami 2>/dev/null) ; \
+	  if [ -z "$$who" ]; then echo "NO — run: npm login"; fail=1 ; else echo "ok ($$who)" ; fi ; \
+	printf "  %-34s" "version $(VERSION) unpublished" ; \
+	  if $(NPM) view $(PKG_NAME)@$(VERSION) version >/dev/null 2>&1; then echo "NO — already on npm"; fail=1 ; else echo "ok" ; fi ; \
+	printf "  %-34s" "tag v$(VERSION) free" ; \
+	  if $(GIT) $(GIT_FLAGS) rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null; then echo "NO — tag exists"; fail=1 ; else echo "ok" ; fi ; \
+	echo "" ; \
+	if [ $$fail -ne 0 ]; then echo "publish-check FAILED — fix the above first"; exit 1 ; fi ; \
+	echo "publish-check passed for $(PKG_NAME)@$(VERSION)"
+
+# Shows the exact tarball contents. Read this before every publish: the `files`
+# allowlist in package.json is the only thing keeping src/, tests and the plan
+# out of a public package.
+publish-dry: build
+	@$(NPM) $(NPM_FLAGS) pack --dry-run
+
+publish: publish-check check
+	@echo ""
+	@echo "==> publishing $(PKG_NAME)@$(VERSION) to the public npm registry"
+	$(NPM) $(NPM_FLAGS) publish --access public
+	$(GIT) $(GIT_FLAGS) tag -a "v$(VERSION)" -m "$(PKG_NAME) v$(VERSION)"
+	$(GIT) $(GIT_FLAGS) push origin "v$(VERSION)"
+	@echo "==> published, and tagged v$(VERSION)"
+	@echo "==> install with: npm i -g $(PKG_NAME)"
 
 # ============================================================================
 # Info
@@ -318,14 +321,6 @@ status:
 	@$(NODE) -e 'const p=require("$(PKG_JSON)"); \
 	  console.log("  runtime: "+(Object.keys(p.dependencies||{}).length||0)+"   dev: "+Object.keys(p.devDependencies||{}).join(", "));'
 
-sessions:
-	@test -d "$(SESSIONS_DIR)" || { echo "no session store at $(SESSIONS_DIR)"; exit 0; }
-	@echo "==> projects with sessions in $(SESSIONS_DIR)"
-	@for d in "$(SESSIONS_DIR)"/*/ ; do \
-	   n=$$(ls "$$d"*.jsonl 2>/dev/null | wc -l | tr -d ' ') ; \
-	   [ "$$n" -gt 0 ] && printf "  %4s  %s\n" "$$n" "$$(basename $$d)" ; \
-	 done | sort -rn | head -25
-	@echo "  (count, encoded project dir — newest sessions via: make list)"
 
 # Known gaps, kept here so they are one command away instead of buried in a
 # review transcript. Each was found during implementation and deliberately
@@ -353,27 +348,15 @@ snags:
 	@echo ""
 	@echo "  Full reasoning: $(SPEC)"
 
-spec:
-	@echo "$(SPEC)"
-
-plan:
-	@echo "$(PLAN)"
 
 # ============================================================================
 # Cleanup
 # ============================================================================
 
-clean: clean-dist clean-sandbox
+clean:
+	rm -rf $(DIST_DIR) $(SANDBOX)
 
-clean-dist:
-	rm -rf $(DIST_DIR)
-
-clean-node:
+# Everything git can reproduce.
+distclean: clean
 	rm -rf $(NODE_MODULES)
-
-clean-sandbox:
-	rm -rf $(SANDBOX)
-
-# Everything that git can reproduce.
-distclean: clean clean-node
 	@echo "==> removed dist/, node_modules/ and the demo sandbox"

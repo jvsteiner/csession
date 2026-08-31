@@ -1,10 +1,39 @@
 {
   "name": "csession",
   "version": "0.1.0",
-  "private": true,
+  "description": "Move a Claude Code session between machines, or hand one to a peer.",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "session",
+    "transcript",
+    "cli",
+    "transfer"
+  ],
+  "homepage": "https://github.com/jvsteiner/csession#readme",
+  "bugs": {
+    "url": "https://github.com/jvsteiner/csession/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jvsteiner/csession.git"
+  },
+  "author": "Jamie Steiner <jvsteiner@gmail.com>",
+  "license": "MIT",
   "type": "module",
-  "bin": { "csession": "./dist/cli.js" },
-  "engines": { "node": ">=20" },
+  "bin": {
+    "csession": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist/**/*.js",
+    "!dist/**/*.test.js",
+    "!dist/testutil.js",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
