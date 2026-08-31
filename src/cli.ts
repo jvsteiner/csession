@@ -2,6 +2,7 @@
 import { parseArgs } from "./args.js";
 import { CsError } from "./errors.js";
 import { listCommand } from "./commands/list.js";
+import { exportCommand } from "./commands/export.js";
 
 const HELP = `csession - move a Claude Code session between machines
 
@@ -20,6 +21,9 @@ function main(): number {
   switch (args.command) {
     case "list":
       console.log(listCommand(args.flags, process.cwd()));
+      return 0;
+    case "export":
+      console.log(exportCommand(args.positional, args.flags, process.cwd(), new Date()));
       return 0;
     case "help":
     case "--help":

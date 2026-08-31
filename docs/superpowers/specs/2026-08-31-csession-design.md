@@ -129,7 +129,8 @@ csession export [session-id] -o FILE [--dry-run] [--include-untracked]
                                     [--paranoid] [--no-redact]
 ```
 
-With no id, list this project's sessions newest-first and prompt.
+With no id, select the newest session for this project and print which one was chosen.
+Interactive selection is deferred to phase 2; `csession list` covers choosing by hand.
 
 1. **Locate** `~/.claude/projects/<encoded>/<id>.jsonl`.
 2. **Determine the project root** by reading the `cwd` field from the records —
