@@ -1,6 +1,6 @@
 {
   "name": "csession",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Move a Claude Code session between machines, or hand one to a peer.",
   "keywords": [
     "claude",
