@@ -50,6 +50,32 @@ export function diffPatch(root: string): string {
   return r.stdout + "\n";
 }
 
+/**
+ * A patch for untracked, non-ignored files, built WITHOUT touching the index.
+ *
+ * `git diff HEAD` cannot see untracked files at all, so --include-untracked would
+ * otherwise be a no-op. `git add -N` would work but mutates the user's index as a
+ * side effect of an export, which an export must never do. `--no-index` against
+ * /dev/null gives the same hunks with no state change.
+ *
+ * The file list comes from probe().untrackedFiles, i.e. `ls-files --others
+ * --exclude-standard`, so anything matched by .gitignore is already excluded and
+ * stays excluded. This flag must never become --include-secrets.
+ */
+export function untrackedPatch(root: string, files: string[]): string {
+  let out = "";
+  for (const file of files) {
+    // --no-index exits 1 when the inputs differ, which is always true here.
+    const r = spawnSync("git", ["diff", "--no-index", "--binary", "--", "/dev/null", file],
+      { cwd: root, encoding: "utf8", maxBuffer: 512 * 1024 * 1024 });
+    if (r.status !== 0 && r.status !== 1) {
+      throw new Error(`git diff --no-index failed for ${file}: ${r.stderr ?? ""}`);
+    }
+    out += r.stdout ?? "";
+  }
+  return out;
+}
+
 export function applyCheck(root: string, patchPath: string): { ok: boolean; output: string } {
   const r = run(root, ["apply", "--check", patchPath]);
   return { ok: r.ok, output: r.stderr || r.stdout };

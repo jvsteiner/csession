@@ -162,6 +162,43 @@ test("untracked names go in the manifest but their contents never do", () => {
   }
 });
 
+test("--include-untracked puts an untracked file's name AND content into uncommitted.patch", () => {
+  const s = scaffold();
+  const out = join(s.root, "..", "untracked-included.ccsession");
+  try {
+    writeFileSync(join(s.root, "new-thing.txt"), "brand new untracked content\n");
+    exportCommand([s.sessionId], { out, "include-untracked": true }, s.root, NOW);
+    const files = readBundle(out);
+    assert.ok("uncommitted.patch" in files);
+    assert.match(files["uncommitted.patch"]!, /new-thing\.txt/);
+    assert.match(files["uncommitted.patch"]!, /brand new untracked content/);
+  } finally {
+    rmSync(out, { force: true });
+    s.cleanup();
+  }
+});
+
+// --include-untracked must never become --include-secrets: a gitignored file is
+// filtered out by probe()'s `ls-files --others --exclude-standard` before
+// untrackedPatch() ever sees its name, so it must stay out of every bundle entry
+// even when the flag is set.
+test("--include-untracked never leaks a .gitignore'd file's content", () => {
+  const s = scaffold();
+  const out = join(s.root, "..", "ignored-secret.ccsession");
+  try {
+    writeFileSync(join(s.root, ".gitignore"), ".env\n");
+    writeFileSync(join(s.root, ".env"), "TOTALLY_IGNORED_SECRET_9f8c3d21\n");
+    exportCommand([s.sessionId], { out, "include-untracked": true }, s.root, NOW);
+    const files = readBundle(out);
+    for (const content of Object.values(files)) {
+      assert.ok(!content.includes("TOTALLY_IGNORED_SECRET_9f8c3d21"));
+    }
+  } finally {
+    rmSync(out, { force: true });
+    s.cleanup();
+  }
+});
+
 test("an unknown session id is a user error, exit code 1", () => {
   const s = scaffold();
   try {

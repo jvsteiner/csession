@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { listSessionFiles, sessionFilePath } from "../paths.js";
 import { readLines, statTranscript, deriveProjectRoot, sha256 } from "../transcript.js";
 import { redact } from "../redact.js";
-import { probe, diffPatch } from "../git.js";
+import { probe, diffPatch, untrackedPatch } from "../git.js";
 import { writeBundle } from "../bundle.js";
 import { SCHEMA, type Manifest } from "../manifest.js";
 import { UserError } from "../errors.js";
@@ -56,7 +56,10 @@ export function exportCommand(
 
   const git = probe(derived.root);
   const includeUntracked = flags["include-untracked"] === true;
-  const patch = git.dirty || includeUntracked ? diffPatch(derived.root) : "";
+  let patch = git.dirty || includeUntracked ? diffPatch(derived.root) : "";
+  if (includeUntracked) {
+    patch += untrackedPatch(derived.root, git.untrackedFiles);
+  }
 
   const manifest: Manifest = {
     schema: SCHEMA,
