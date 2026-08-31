@@ -219,10 +219,16 @@ test("omitting -o is a user error", () => {
   }
 });
 
-// Spawn the real binary so the catch block in cli.ts actually executes. Every other
-// test in this file calls exportCommand() directly, so nothing so far has proven
-// that a thrown UserError actually turns into `process.exit(1)` on the real CLI -
-// cli.ts's try/catch has never run. This is the first command that genuinely throws.
+// Spawn the real binary so cli.ts's catch block actually executes. Every other test
+// in this file calls exportCommand() directly, so none of them prove that a thrown
+// CsError reaches cli.ts's `catch (e) { if (e instanceof CsError) ... }`, gets
+// formatted as `error: <message>`, and exits with the error's own code - as opposed
+// to escaping as an uncaught exception, which Node's default handler ALSO exits with
+// code 1, but by printing a stack trace instead of "error: ...". A bare
+// `assert.equal(r.status, 1)` cannot tell those two paths apart - it would pass
+// identically even if the entire catch block were deleted. The stderr assertions
+// below are what actually distinguish "the mapping ran" from "the process merely
+// died at exit code 1 for some other reason."
 test("CLI process: exporting from a project with no sessions exits with code 1", () => {
   const made = mkdtempSync(join(tmpdir(), "csession-exp-noroot-"));
   const g0 = (...a: string[]) => execFileSync("git", a, { cwd: made, encoding: "utf8" });
@@ -241,6 +247,12 @@ test("CLI process: exporting from a project with no sessions exits with code 1",
     });
     assert.equal(r.status, 1);
     assert.equal(existsSync(out), false);
+    // Emitted only by cli.ts's catch block; Node's default uncaught-exception
+    // handler never prints this prefix.
+    assert.match(r.stderr, /^error: /m);
+    // No stack frames: if the error had instead escaped as an uncaught exception,
+    // Node would print one here.
+    assert.doesNotMatch(r.stderr, /at .*\(.*:\d+:\d+\)/);
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(outDir, { recursive: true, force: true });
