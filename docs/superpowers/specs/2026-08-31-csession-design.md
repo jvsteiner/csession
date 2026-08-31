@@ -211,17 +211,26 @@ Import never mutates the working tree.
 
 | Situation | Behaviour |
 |---|---|
-| Local HEAD ≠ `git.commit` | Report the gap, print the `git checkout` command, stop. `--force` proceeds anyway |
+| Local HEAD ≠ `git.commit` | Report the relationship (ahead/behind/diverged/unknown) as a warning, and continue. `--worktree` checks the bundle's commit out into a separate directory if you want the exact tree |
 | `uncommitted.patch` present | Run `git apply --check`, report, print the command, do not apply |
 | Local remote ≠ `git.remote` | Warn loudly, stop. `--force` proceeds anyway |
 | Session id already exists locally | Refuse; `--new-id` mints a fresh UUID |
 
+A commit is not part of a session's identity: it appears nowhere in the
+transcript or the `~/.claude/projects/...` path, and Claude Code itself does
+not track it — `claude --resume` just re-reads whatever is on disk. A commit
+mismatch is therefore the normal condition of a resumed session, not a hazard,
+so it is reported rather than refused. A remote mismatch is different: it means
+this may be a different repository altogether, where every rewritten path
+would land as nonsense, so it still stops.
+
 A tool that helpfully checks out a branch is a tool that eventually destroys
 someone's uncommitted work. Report and hand over the command.
 
-`--force` covers exactly the two git mismatches above. It never bypasses the
-sha check, the schema check, or an id collision — those indicate a broken or
-ambiguous bundle rather than a judgement call.
+`--force` covers the remote mismatch above. It never bypasses the sha check,
+the schema check, or an id collision — those indicate a broken or ambiguous
+bundle rather than a judgement call. It has nothing to do with a commit
+mismatch, which is never refused in the first place.
 
 `--new-id` rewrites the `sessionId` field throughout and renames the output file.
 The default is to keep the original id, so the same session is traceable across
@@ -245,9 +254,12 @@ not theirs.
 ### Honest limitation
 
 Import verifies nothing about file contents. A resumed session carries history
-that *asserts* things about a tree. If the tree differs, the model will be
-confidently wrong. The commit check is the only guard, which is why it stops
-rather than warns.
+that *asserts* things about a tree, and Claude re-reads whatever is actually on
+disk when it resumes — the same as it does for every session, commit-matched or
+not. The commit check reports that gap instead of guessing at it; a difference
+of time is not evidence of a wrong repository. The remote check is the guard
+that still stops, because that is the one difference every rewritten path
+would turn to nonsense.
 
 ## CLI surface
 

@@ -16,11 +16,16 @@ const HELP = `csession - move a Claude Code session between machines
 export options:  --dry-run  --include-untracked  --paranoid  --no-redact
 import options:  --root PATH  --new-id  --force  --worktree
 
-  --worktree   on a commit mismatch, import into a new git worktree checked out
-               at the bundle's commit instead of refusing - the current
-               checkout is left untouched. Still refuses on any OTHER mismatch
-               (remote, schema, id collision). Wins over --force if both are
-               given, since it makes the tree actually match.
+  --force      proceed past a remote mismatch (this may be a different
+               repository). Does not relate to a commit mismatch, which is
+               reported but never refused - see --worktree below.
+  --worktree   check the bundle's commit out into a new git worktree and
+               import there instead of into the current checkout, so the
+               tree matches exactly what the transcript describes. The
+               current checkout is left untouched. This is an opt-in choice,
+               not a way past a refusal - a commit mismatch never refuses.
+               Still refuses on any OTHER mismatch (remote, schema, id
+               collision). Wins over --force if both are given.
 
 exit codes: 0 ok, 1 user error, 2 safety refusal, 3 corrupt bundle`;
 

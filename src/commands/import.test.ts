@@ -137,28 +137,55 @@ test("paths outside the project root are left alone and reported", () => {
   }
 });
 
-test("a commit mismatch refuses with exit 2 and writes nothing", () => {
+// A commit mismatch is the normal condition of a resumed session (the transcript format
+// has no notion of a commit at all), not a hazard. It is reported, not refused: the
+// import completes and the report carries a WARNING plus the relationship sentence.
+test("a commit mismatch is reported as a warning and the import proceeds", () => {
   const r = receiverRepo();
   const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
   try {
     const bundle = makeBundle(dir, { commit: "f".repeat(40) });
-    const err = caught(() => importCommand([bundle], { root: r.root }, r.root));
-    assert.equal(err.exitCode, 2);
-    assert.match(err.message, /git -C .* checkout/);
-    assert.equal(existsSync(sessionFilePath(r.root, SESSION_ID)), false);
+    const report = importCommand([bundle], { root: r.root }, r.root);
+    assert.match(report, /WARNING: commit mismatch/);
+    assert.match(report, /fetch first/); // the relationship sentence, for an unknown commit
+    assert.ok(existsSync(sessionFilePath(r.root, SESSION_ID)));
   } finally {
     rmSync(dir, { recursive: true, force: true });
     r.cleanup();
   }
 });
 
-test("--force proceeds past a commit mismatch", () => {
+// --force no longer relates to a commit mismatch at all - it covers the remote mismatch
+// only. This is what used to require --force; it must now succeed without it.
+test("a commit mismatch imports without needing --force", () => {
   const r = receiverRepo();
   const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
   try {
     const bundle = makeBundle(dir, { commit: "f".repeat(40) });
-    importCommand([bundle], { root: r.root, force: true }, r.root);
+    const report = importCommand([bundle], { root: r.root }, r.root); // no --force
     assert.ok(existsSync(sessionFilePath(r.root, SESSION_ID)));
+    assert.doesNotMatch(report, /--force was used/, "--force was never passed, so its own warning must not appear");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+// A commit mismatch must not affect what the import actually does: the transcript still
+// lands at the right path, with paths still rewritten to the local root.
+test("a commit mismatch still writes the transcript to the right place and rewrites paths", () => {
+  const r = receiverRepoTwoCommits();
+  const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
+  try {
+    const bundle = makeBundle(dir, { commit: r.older }); // local checkout is at r.newer
+    const report = importCommand([bundle], { root: r.root }, r.root);
+    const dest = sessionFilePath(r.root, SESSION_ID);
+    assert.ok(existsSync(dest));
+    const text = readFileSync(dest, "utf8");
+    assert.ok(text.includes(`${r.root}/a.txt`));
+    assert.ok(!text.includes(SENDER_ROOT));
+    assert.match(report, /3 paths rewritten/);
+    assert.match(report, /claude --resume/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
     r.cleanup();
@@ -390,17 +417,18 @@ test("no --root and no matching checkout is a user error", () => {
 
 // Two SHAs with no stated relationship forced a human to work out, unaided, that being
 // 249 commits ahead is nothing like a genuine divergence. commitRelation() computes
-// that relationship; this proves the sentence it produces actually reaches the report.
-test("commit mismatch message states how the two commits relate", () => {
+// that relationship; this proves the sentence it produces actually reaches the report -
+// now as a warning alongside a completed import, not inside a refusal.
+test("commit mismatch warning states how the two commits relate", () => {
   const r = receiverRepoTwoCommits();
   const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
   try {
     const bundle = makeBundle(dir, { commit: r.older });
-    const err = caught(() => importCommand([bundle], { root: r.root }, r.root));
-    assert.equal(err.exitCode, 2);
-    assert.match(err.message, /ahead of the bundle/);
-    assert.match(err.message, /1 commit/);
-    assert.match(err.message, /2 files? differ/);
+    const report = importCommand([bundle], { root: r.root }, r.root);
+    assert.match(report, /ahead of the bundle/);
+    assert.match(report, /1 commit/);
+    assert.match(report, /2 files? differ/);
+    assert.ok(existsSync(sessionFilePath(r.root, SESSION_ID)));
   } finally {
     rmSync(dir, { recursive: true, force: true });
     r.cleanup();
@@ -409,40 +437,29 @@ test("commit mismatch message states how the two commits relate", () => {
 
 // The original complaint was that the tool KNEW a worktree would fix this and never
 // said so - a person only finds --worktree by reading --help, which is not where they
-// look after a command just failed. The mismatch message must offer it directly, and
-// must not offer it when it cannot work (the commit isn't in the repo to check out).
-test("commit mismatch message offers --worktree, best-first, when the commit is known locally", () => {
+// look after importing. The warning must mention it directly when it would work, and
+// must not mention it when it cannot (the commit isn't in the repo to check out).
+test("commit mismatch warning mentions --worktree when the commit is known locally", () => {
   const r = receiverRepoTwoCommits();
   const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
   try {
     const bundle = makeBundle(dir, { commit: r.older });
-    const err = caught(() => importCommand([bundle], { root: r.root }, r.root));
-    assert.equal(err.exitCode, 2);
-
-    const wtIdx = err.message.indexOf("--worktree");
-    const forceIdx = err.message.indexOf("--force");
-    // "checkout" alone also occurs earlier, in "your checkout is N commits ahead..." -
-    // the manual git command is the only place "git -C" appears, so anchor on that.
-    const manualIdx = err.message.indexOf("git -C");
-    assert.ok(wtIdx !== -1, "must mention --worktree");
-    assert.ok(wtIdx < forceIdx, "--worktree must be offered before --force");
-    assert.ok(forceIdx < manualIdx, "--force must be offered before the manual checkout");
+    const report = importCommand([bundle], { root: r.root }, r.root);
+    assert.match(report, /--worktree/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
     r.cleanup();
   }
 });
 
-test("commit mismatch message does NOT offer --worktree when the bundle's commit is unknown locally", () => {
+test("commit mismatch warning does NOT mention --worktree when the bundle's commit is unknown locally", () => {
   const r = receiverRepo();
   const dir = mkdtempSync(join(tmpdir(), "csession-b-"));
   try {
     const bundle = makeBundle(dir, { commit: "f".repeat(40) });
-    const err = caught(() => importCommand([bundle], { root: r.root }, r.root));
-    assert.equal(err.exitCode, 2);
-    assert.ok(!err.message.includes("--worktree"), "--worktree cannot work on a commit that isn't here");
-    assert.match(err.message, /fetch/i);
-    assert.match(err.message, /--force/);
+    const report = importCommand([bundle], { root: r.root }, r.root);
+    assert.ok(!report.includes("--worktree"), "--worktree cannot work on a commit that isn't here");
+    assert.match(report, /fetch/i);
   } finally {
     rmSync(dir, { recursive: true, force: true });
     r.cleanup();

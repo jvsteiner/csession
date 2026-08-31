@@ -64,10 +64,13 @@ export function importCommand(
     );
   }
 
-  // --worktree addresses ONLY this check. It never reaches the code below when the
-  // commit already matches, and it runs after the remote check above, so it can never
-  // paper over a mismatch that check would have caught.
+  // A commit mismatch is not a hazard - it is the normal state of a resumed session,
+  // since the transcript format has no notion of a commit at all. --worktree is the one
+  // thing that still cares: it needs the bundle's commit to actually exist locally
+  // before it can check it out. Otherwise, the mismatch is reported (see
+  // commitMismatchWarning below) and the import proceeds.
   let worktreeOrigin: string | null = null;
+  let commitWarning: string | null = null;
   if (m.git.commit && local.commit && m.git.commit !== local.commit) {
     const relation = commitRelation(root, m.git.commit, local.commit);
     if (useWorktree) {
@@ -98,12 +101,8 @@ export function importCommand(
       // rewrite, the session file location, and the resume command.
       worktreeOrigin = root;
       root = wtPath;
-    } else if (!force) {
-      throw new SafetyError(
-        `commit mismatch.\n  bundle: ${safe(m.git.commit)}\n  local:  ${local.commit}\n\n` +
-          `${describeRelation(relation)}\n\n` +
-          `${mismatchAdvice(root, m.git.commit, relation)}`,
-      );
+    } else {
+      commitWarning = commitMismatchWarning(m.git.commit, local.commit, relation);
     }
   }
 
@@ -125,7 +124,7 @@ export function importCommand(
 
   atomicWrite(dest, lines.join("\n") + "\n");
 
-  return buildReport(m, root, newId, rewritten.replaced, unresolved, files, force, worktreeOrigin);
+  return buildReport(m, root, newId, rewritten.replaced, unresolved, files, force, worktreeOrigin, commitWarning);
 }
 
 /**
@@ -149,35 +148,30 @@ function describeRelation(r: CommitRelation): string {
 }
 
 /**
- * What a person can actually DO about a commit mismatch, best option first. --worktree
- * leaves the current checkout alone, so it leads; --force is next because it at least
- * completes the import (against a tree that may have moved); a manual checkout is
- * last because it is the one that mutates the checkout the user is standing in.
+ * A commit mismatch is the normal condition of a resumed session: the transcript format
+ * records no commit anywhere, `claude --resume` just re-reads whatever is on disk, and
+ * people resume week-old sessions after fifty commits every day without incident. So
+ * this reports, it does not refuse - the report says plainly what the mismatch means
+ * (the history describes the bundle's tree, not the one on disk) rather than presenting
+ * it as a hazard to route around.
  *
- * --worktree is omitted entirely when the bundle's commit isn't in the repo at all -
- * offering it there would be a suggestion that cannot work. Fetching is the fix in
- * that case, so the manual line offers a fetch-then-checkout instead of a bare checkout.
+ * --worktree is mentioned as the option for the exact tree, but only when the bundle's
+ * commit actually exists locally - suggesting it against a commit that hasn't been
+ * fetched would be advice that cannot work.
  */
-function mismatchAdvice(root: string, bundleCommit: string, relation: CommitRelation): string {
-  const force = `  --force       import anyway. The history will describe files that have\n` + `                since changed.`;
-
-  if (relation.kind === "unknown") {
-    return (
-      `The conversation assumes the bundle's tree, and that commit is not here yet.\n` +
-      `Two ways forward:\n\n` +
-      `${force}\n\n` +
-      `  or fetch it and match the tree yourself, which moves this checkout:\n` +
-      `                git -C ${root} fetch && git -C ${root} checkout ${safe(bundleCommit)}`
-    );
-  }
+function commitMismatchWarning(bundleCommit: string, localCommit: string, relation: CommitRelation): string {
+  const worktreeNote =
+    relation.kind === "unknown"
+      ? ""
+      : `\n\nIf you want the exact tree the conversation describes, re-run with --worktree ` +
+        `to check the bundle's commit out into a separate directory instead.`;
 
   return (
-    `The conversation assumes the bundle's tree. Three ways forward:\n\n` +
-    `  --worktree    check the bundle's commit out into a separate directory and\n` +
-    `                import there. Your current checkout is not touched.  (best)\n\n` +
-    `${force}\n\n` +
-    `  or match the tree yourself, which moves this checkout:\n` +
-    `                git -C ${root} checkout ${safe(bundleCommit)}`
+    `WARNING: commit mismatch.\n  bundle: ${safe(bundleCommit)}\n  local:  ${localCommit}\n\n` +
+    `${describeRelation(relation)}\n\n` +
+    `The transcript's history describes the tree at the bundle's commit. The files here ` +
+    `have moved on since then, and Claude will re-read whatever is actually on disk when ` +
+    `you resume, the same as it always does.${worktreeNote}`
   );
 }
 
@@ -227,12 +221,17 @@ function buildReport(
   files: Record<string, string>,
   force: boolean,
   worktreeOrigin: string | null,
+  commitWarning: string | null,
 ): string {
   const l: string[] = [];
   if (worktreeOrigin) {
     l.push(`Created a git worktree at the bundle's commit: ${root}`);
     l.push(`  your checkout at ${worktreeOrigin} was not touched`);
     l.push(`  to remove the worktree:  git -C ${worktreeOrigin} worktree remove ${root}`);
+    l.push("");
+  }
+  if (commitWarning) {
+    l.push(commitWarning);
     l.push("");
   }
   l.push(`session ${newId}  (${m.session.recordCount} records)`);
@@ -271,7 +270,7 @@ function buildReport(
   }
   if (force) {
     l.push("");
-    l.push("WARNING: --force was used. The history may describe a tree you do not have.");
+    l.push("WARNING: --force was used. It only bypasses the remote-mismatch check now, so make sure this is the repository you think it is.");
   }
   l.push("");
   l.push(`Resume with:  cd ${root} && claude --resume ${newId}`);
