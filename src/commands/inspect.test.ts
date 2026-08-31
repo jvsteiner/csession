@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { caught } from "../testutil.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { writeBundle } from "../bundle.js";
 import { inspectCommand } from "./inspect.js";
 import { sha256 } from "../transcript.js";
@@ -59,12 +60,42 @@ test("inspect against a garbage file throws CorruptBundleError with exit code 3"
     const junkPath = join(dir, "garbage.ccsession");
     writeFileSync(junkPath, "this is not a tar file at all");
 
-    const r = spawnSync(process.execPath, ["dist/cli.js", "inspect", junkPath], {
-      cwd: "/Users/jamie/Code/csession-phase-1",
+    const cliPath = join(dirname(fileURLToPath(import.meta.url)), "..", "cli.js");
+    const r = spawnSync(process.execPath, [cliPath, "inspect", junkPath], {
       encoding: "utf8",
     });
     assert.equal(r.status, 3);
     assert.match(r.stderr, /^error: /m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("inspect prints redaction DISABLED warning when redaction is not applied", () => {
+  const dir = mkdtempSync(join(tmpdir(), "csession-insp-"));
+  try {
+    const out = bundleAt(dir, '{"a":1}\n', { redaction: { applied: false, paranoid: false, hits: [] } });
+    const report = inspectCommand([out]);
+    assert.match(report, /redaction DISABLED - this bundle may contain secrets/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("inspect sanitizes manifest strings to prevent ANSI injection attacks", () => {
+  const dir = mkdtempSync(join(tmpdir(), "csession-insp-"));
+  try {
+    // ESC[2K clears the line; ESC[0G moves cursor to start; \r carriage return would visually erase earlier content.
+    // A hostile bundle could embed "sha256 OK" in projectRoot to fool the reader into trusting a bad sha.
+    const maliciousRoot = "[2K\rsha256 OK";
+    const out = bundleAt(dir, '{"a":1}\n', { session: { id: "s1", projectRoot: maliciousRoot, recordCount: 1, sha256: "0".repeat(64), claudeVersions: [] } });
+    const report = inspectCommand([out]);
+    // The real sha verdict must still appear
+    assert.match(report, /sha256 MISMATCH/);
+    // The escape sequence itself must not appear in the output
+    assert.ok(!report.includes("\x1b"));
+    // The malicious root must be stripped of control chars
+    assert.ok(!report.includes("[2K\rsha256 OK"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
